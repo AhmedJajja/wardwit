@@ -1,0 +1,276 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+
+:root {
+  /* Field Notebook Warm Ivory & Ink Palette */
+  --bg-canvas: #FAF7F0;
+  --bg-surface: #FFFFFF;
+  --bg-surface-alt: #F3EFE6;
+  --bg-surface-tint: #EBF2F1;
+  --text-ink: #1E252B;
+  --text-muted: #53626C;
+  --text-light: #7E8D98;
+  
+  /* Primary & Accent Inks */
+  --primary-teal: #145355;
+  --primary-teal-hover: #0D3B3C;
+  --primary-teal-subtle: #E3EFEF;
+  --coral: #E06A55;
+  --coral-light: #FBECE9;
+  --marigold: #E89A3C;
+  --marigold-light: #FDF3E5;
+  --mint: #3E978B;
+  --mint-light: #E4F3F1;
+  --border-ink: #1E252B;
+  
+  /* Notebook Offset Shadow System */
+  --shadow-offset: 3px 3px 0px #1E252B;
+  --shadow-offset-hover: 5px 5px 0px #1E252B;
+  --shadow-offset-active: 1px 1px 0px #1E252B;
+  --shadow-offset-sm: 2px 2px 0px #1E252B;
+  --shadow-offset-lg: 6px 6px 0px #1E252B;
+
+  /* Typography */
+  --font-body: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  --font-heading: 'Outfit', 'Plus Jakarta Sans', sans-serif;
+
+  /* Radii */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-full: 9999px;
+
+  /* Spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+}
+
+/* Theme: Dark Ink Mode */
+[data-theme='dark'] {
+  --bg-canvas: #151A1E;
+  --bg-surface: #1E252B;
+  --bg-surface-alt: #28323A;
+  --bg-surface-tint: #182C2E;
+  --text-ink: #F4F3EF;
+  --text-muted: #A8B5BF;
+  --text-light: #778691;
+
+  --primary-teal: #48A9A6;
+  --primary-teal-hover: #5ABCB9;
+  --primary-teal-subtle: #1C3334;
+  --coral: #FF7B65;
+  --coral-light: #3D221D;
+  --marigold: #F5AA52;
+  --marigold-light: #38291A;
+  --mint: #5DC3B7;
+  --mint-light: #16312E;
+  --border-ink: #A8B5BF;
+
+  --shadow-offset: 3px 3px 0px #0D1113;
+  --shadow-offset-hover: 5px 5px 0px #0D1113;
+  --shadow-offset-active: 1px 1px 0px #0D1113;
+  --shadow-offset-sm: 2px 2px 0px #0D1113;
+  --shadow-offset-lg: 6px 6px 0px #0D1113;
+}
+
+/* Base Reset & Typography */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-body);
+  background-color: var(--bg-canvas);
+  color: var(--text-ink);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading);
+  color: var(--text-ink);
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+/* Accessible Focus Styling */
+:focus-visible {
+  outline: 3px solid var(--primary-teal);
+  outline-offset: 3px;
+}
+
+/* Reduced Motion Preference */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Field Notebook Card Component Classes */
+.card-notebook {
+  background: var(--bg-surface);
+  border: 2px solid var(--border-ink);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-offset);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.card-notebook-interactive:hover {
+  transform: translate(-1.5px, -1.5px);
+  box-shadow: var(--shadow-offset-hover);
+}
+
+.card-notebook-interactive:active {
+  transform: translate(1px, 1px);
+  box-shadow: var(--shadow-offset-active);
+}
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-family: var(--font-body);
+  font-weight: 600;
+  font-size: 0.95rem;
+  padding: 10px 18px;
+  min-height: 44px;
+  border-radius: var(--radius-md);
+  border: 2px solid var(--border-ink);
+  cursor: pointer;
+  text-decoration: none;
+  transition: transform 0.1s ease, box-shadow 0.1s ease, background-color 0.15s ease;
+  user-select: none;
+}
+
+.btn:active {
+  transform: translate(2px, 2px);
+  box-shadow: var(--shadow-offset-active);
+}
+
+.btn-primary {
+  background-color: var(--primary-teal);
+  color: #FFFFFF;
+  box-shadow: var(--shadow-offset);
+}
+
+.btn-primary:hover {
+  background-color: var(--primary-teal-hover);
+  box-shadow: var(--shadow-offset-hover);
+  transform: translate(-1px, -1px);
+}
+
+.btn-secondary {
+  background-color: var(--bg-surface);
+  color: var(--text-ink);
+  box-shadow: var(--shadow-offset-sm);
+}
+
+.btn-secondary:hover {
+  background-color: var(--bg-surface-alt);
+  box-shadow: var(--shadow-offset);
+  transform: translate(-1px, -1px);
+}
+
+.btn-accent-coral {
+  background-color: var(--coral);
+  color: #FFFFFF;
+  box-shadow: var(--shadow-offset);
+}
+
+.btn-accent-coral:hover {
+  background-color: #D35843;
+  box-shadow: var(--shadow-offset-hover);
+  transform: translate(-1px, -1px);
+}
+
+.btn-outline {
+  background-color: transparent;
+  color: var(--text-ink);
+  border: 2px dashed var(--border-ink);
+  box-shadow: none;
+}
+
+.btn-outline:hover {
+  background-color: var(--bg-surface-alt);
+  border-style: solid;
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  min-height: 36px;
+}
+
+.btn-lg {
+  padding: 14px 24px;
+  font-size: 1.1rem;
+  min-height: 52px;
+}
+
+/* Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border-ink);
+  line-height: 1.2;
+}
+
+.badge-demo {
+  background-color: var(--marigold-light);
+  color: #8C5410;
+  border-color: #C67E1B;
+}
+
+.badge-teal {
+  background-color: var(--primary-teal-subtle);
+  color: var(--primary-teal);
+}
+
+.badge-coral {
+  background-color: var(--coral-light);
+  color: var(--coral);
+}
+
+.badge-mint {
+  background-color: var(--mint-light);
+  color: var(--mint);
+}
+
+/* Clean grid and layout helpers */
+.container {
+  width: 100%;
+  max-width: 1140px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+.disclaimer-banner {
+  background-color: var(--marigold-light);
+  border: 2px dashed #C67E1B;
+  border-radius: var(--radius-md);
+  padding: 8px 14px;
+  font-size: 0.82rem;
+  color: #6C420D;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
