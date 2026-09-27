@@ -1,9 +1,30 @@
 import React from 'react';
-import { BookOpen, PlusCircle, Settings, HardDrive, Play, VolumeX, Sparkles } from 'lucide-react';
+import {
+  BookOpen,
+  PlusCircle,
+  Settings,
+  HardDrive,
+  Play,
+  VolumeX,
+  Sparkles,
+  FileText,
+  Layers,
+  BarChart2,
+  FolderEdit,
+} from 'lucide-react';
 import { BRAND } from '../../config/brand.config';
 import type { UserSettings } from '../../domain/types';
 
-export type ScreenName = 'dashboard' | 'create-session' | 'player' | 'results' | 'settings';
+export type ScreenName =
+  | 'dashboard'
+  | 'create-session'
+  | 'player'
+  | 'results'
+  | 'error-notebook'
+  | 'flashcards'
+  | 'analytics'
+  | 'workspace'
+  | 'settings';
 
 interface NavbarProps {
   currentScreen: ScreenName;
@@ -11,6 +32,8 @@ interface NavbarProps {
   hasActiveSession: boolean;
   onResumeSession?: () => void;
   settings: UserSettings;
+  dueFlashcardsCount?: number;
+  dueReviewsCount?: number;
   onToggleQuietMode?: () => void;
 }
 
@@ -20,6 +43,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   hasActiveSession,
   onResumeSession,
   settings,
+  dueFlashcardsCount = 0,
+  dueReviewsCount: _dueReviewsCount = 0,
   onToggleQuietMode,
 }) => {
   return (
@@ -39,10 +64,10 @@ export const Navbar: React.FC<NavbarProps> = ({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          paddingTop: '12px',
-          paddingBottom: '12px',
+          paddingTop: '10px',
+          paddingBottom: '10px',
           flexWrap: 'wrap',
-          gap: '12px',
+          gap: '10px',
         }}
       >
         {/* Brand & Logo */}
@@ -101,7 +126,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
 
         {/* Action Controls & Navigation */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
           {/* Active session resume prompt */}
           {hasActiveSession && currentScreen !== 'player' && (
             <button
@@ -110,19 +135,19 @@ export const Navbar: React.FC<NavbarProps> = ({
               title="Resume unfinished session"
               id="navbar-resume-btn"
             >
-              <Play size={14} fill="currentColor" />
+              <Play size={13} fill="currentColor" />
               <span>Resume Session</span>
             </button>
           )}
 
           {/* Nav links */}
-          <nav style={{ display: 'flex', gap: '6px' }} aria-label="Main Navigation">
+          <nav style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }} aria-label="Main Navigation">
             <button
               onClick={() => onNavigate('dashboard')}
               className={`btn btn-sm ${currentScreen === 'dashboard' ? 'btn-primary' : 'btn-secondary'}`}
               id="nav-dashboard-btn"
             >
-              <BookOpen size={15} />
+              <BookOpen size={14} />
               <span>Dashboard</span>
             </button>
 
@@ -131,8 +156,60 @@ export const Navbar: React.FC<NavbarProps> = ({
               className={`btn btn-sm ${currentScreen === 'create-session' ? 'btn-primary' : 'btn-secondary'}`}
               id="nav-new-session-btn"
             >
-              <PlusCircle size={15} />
-              <span>New Session</span>
+              <PlusCircle size={14} />
+              <span>New Block</span>
+            </button>
+
+            <button
+              onClick={() => onNavigate('error-notebook')}
+              className={`btn btn-sm ${currentScreen === 'error-notebook' ? 'btn-primary' : 'btn-secondary'}`}
+              id="nav-error-notebook-btn"
+            >
+              <FileText size={14} />
+              <span>Error Notebook</span>
+            </button>
+
+            <button
+              onClick={() => onNavigate('flashcards')}
+              className={`btn btn-sm ${currentScreen === 'flashcards' ? 'btn-primary' : 'btn-secondary'}`}
+              id="nav-flashcards-btn"
+              style={{ position: 'relative' }}
+            >
+              <Layers size={14} />
+              <span>Flashcards</span>
+              {dueFlashcardsCount > 0 && (
+                <span
+                  style={{
+                    backgroundColor: 'var(--coral)',
+                    color: '#FFF',
+                    borderRadius: '10px',
+                    fontSize: '0.65rem',
+                    fontWeight: 700,
+                    padding: '1px 5px',
+                    marginLeft: '2px',
+                  }}
+                >
+                  {dueFlashcardsCount}
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => onNavigate('analytics')}
+              className={`btn btn-sm ${currentScreen === 'analytics' ? 'btn-primary' : 'btn-secondary'}`}
+              id="nav-analytics-btn"
+            >
+              <BarChart2 size={14} />
+              <span>Analytics</span>
+            </button>
+
+            <button
+              onClick={() => onNavigate('workspace')}
+              className={`btn btn-sm ${currentScreen === 'workspace' ? 'btn-primary' : 'btn-secondary'}`}
+              id="nav-workspace-btn"
+            >
+              <FolderEdit size={14} />
+              <span>Workspace</span>
             </button>
 
             <button
@@ -140,8 +217,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               className={`btn btn-sm ${currentScreen === 'settings' ? 'btn-primary' : 'btn-secondary'}`}
               id="nav-settings-btn"
             >
-              <Settings size={15} />
-              <span>Settings</span>
+              <Settings size={14} />
             </button>
           </nav>
 
@@ -156,10 +232,10 @@ export const Navbar: React.FC<NavbarProps> = ({
               style={{
                 borderColor: settings.quietMode ? 'var(--coral)' : 'var(--border-ink)',
                 color: settings.quietMode ? 'var(--coral)' : 'var(--text-muted)',
+                padding: '4px 8px',
               }}
             >
-              {settings.quietMode ? <VolumeX size={15} /> : <Sparkles size={15} />}
-              <span style={{ fontSize: '0.8rem' }}>{settings.quietMode ? 'Quiet' : 'Playful'}</span>
+              {settings.quietMode ? <VolumeX size={14} /> : <Sparkles size={14} />}
             </button>
           )}
 
@@ -169,17 +245,17 @@ export const Navbar: React.FC<NavbarProps> = ({
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '5px',
-              fontSize: '0.75rem',
+              gap: '4px',
+              fontSize: '0.72rem',
               color: 'var(--text-muted)',
               backgroundColor: 'var(--bg-surface-alt)',
-              padding: '5px 10px',
+              padding: '4px 8px',
               borderRadius: 'var(--radius-sm)',
               border: '1px solid var(--border-ink)',
             }}
           >
-            <HardDrive size={13} style={{ color: 'var(--mint)' }} />
-            <span>Local Browser DB</span>
+            <HardDrive size={12} style={{ color: 'var(--mint)' }} />
+            <span>Local DB</span>
           </div>
         </div>
       </div>

@@ -8,6 +8,7 @@ export interface QuestionHistoryStats {
   answeredQuestionIds: Set<string>;
   incorrectQuestionIds: Set<string>;
   flaggedQuestionIds: Set<string>;
+  dueReviewQuestionIds?: Set<string>;
 }
 
 /**
@@ -64,6 +65,7 @@ export interface EligibilityResult {
 
 /**
  * Filters questions strictly based on user criteria and history.
+ * Draft and archived questions are strictly excluded.
  * Never silently duplicates or fabricates questions.
  */
 export function filterQuestionsForSession(
@@ -71,10 +73,15 @@ export function filterQuestionsForSession(
   history: QuestionHistoryStats,
   criteria: SessionFilterCriteria
 ): EligibilityResult {
-  const totalBankCount = allQuestions.length;
+  // CRITICAL RULE: Draft and archived questions must NOT leak into study sessions!
+  const approvedQuestions = allQuestions.filter(
+    (q) => q.editorialStatus === 'approved'
+  );
+
+  const totalBankCount = approvedQuestions.length;
 
   // 1. Filter by taxonomy (System, Discipline, Topic)
-  const taxonomyFiltered = allQuestions.filter((q) => {
+  const taxonomyFiltered = approvedQuestions.filter((q) => {
     if (criteria.systems.length > 0 && !criteria.systems.includes(q.system)) {
       return false;
     }
@@ -96,6 +103,8 @@ export function filterQuestionsForSession(
         return history.incorrectQuestionIds.has(q.id);
       case 'flagged':
         return history.flaggedQuestionIds.has(q.id);
+      case 'due_review':
+        return history.dueReviewQuestionIds ? history.dueReviewQuestionIds.has(q.id) : true;
       case 'all':
       default:
         return true;
@@ -112,7 +121,7 @@ export function filterQuestionsForSession(
 
   let message: string | undefined;
   if (actualCount === 0) {
-    message = `0 questions match your selected criteria (${criteria.pool} pool). Try broadening your filters.`;
+    message = `0 approved questions match your selected criteria (${criteria.pool} pool). Try broadening your filters or checking the Content Workspace for approved content.`;
   } else if (hasInsufficientQuestions) {
     message = `Only ${actualCount} matching question${actualCount === 1 ? '' : 's'} available in this pool (requested ${requestedCount}).`;
   }

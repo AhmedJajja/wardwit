@@ -1,7 +1,14 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { DisclaimerBanner } from '../common/DisclaimerBanner';
 import { getRemainingSeconds, isTimerExpired, formatRemainingTime } from '../../domain/timer';
-import type { StudySession, ConfidenceLevel, UserSettings } from '../../domain/types';
+import type {
+  StudySession,
+  ConfidenceLevel,
+  UserSettings,
+  ReportIssueType,
+  ErrorCause,
+  Question,
+} from '../../domain/types';
 import {
   Flag,
   ChevronLeft,
@@ -16,6 +23,8 @@ import {
   Save,
   AlertTriangle,
   Clock,
+  FlagTriangleLeft,
+  FileText,
 } from 'lucide-react';
 
 interface QuestionPlayerViewProps {
@@ -24,6 +33,19 @@ interface QuestionPlayerViewProps {
   onSaveSession: (updated: StudySession) => Promise<void>;
   onFinishSession: (session: StudySession) => void;
   onExitToDashboard: () => void;
+  onReportQuestion?: (report: {
+    questionId: string;
+    questionVersion: number;
+    issueType: ReportIssueType;
+    comment: string;
+  }) => Promise<void>;
+  onAddToErrorNotebook?: (
+    question: Question,
+    selectedOptionId: string | null,
+    cause: ErrorCause,
+    notes: string,
+    takeaway: string
+  ) => Promise<void>;
 }
 
 export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
@@ -32,10 +54,22 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
   onSaveSession,
   onFinishSession,
   onExitToDashboard,
+  onReportQuestion,
+  onAddToErrorNotebook,
 }) => {
   const [session, setSession] = useState<StudySession>(initialSession);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
   const [showSubmitModal, setShowSubmitModal] = useState<boolean>(false);
+  const [showReportModal, setShowReportModal] = useState<boolean>(false);
+  const [reportIssueType, setReportIssueType] = useState<ReportIssueType>('possible_error');
+  const [reportComment, setReportComment] = useState<string>('');
+  const [reportNotice, setReportNotice] = useState<string | null>(null);
+
+  const [showErrorModal, setShowErrorModal] = useState<boolean>(false);
+  const [errorCause, setErrorCause] = useState<ErrorCause>('knowledge_gap');
+  const [errorNotes, setErrorNotes] = useState<string>('');
+  const [errorTakeaway, setErrorTakeaway] = useState<string>('');
+  const [errorNotice, setErrorNotice] = useState<string | null>(null);
   const [remainingSecs, setRemainingSecs] = useState<number>(() => {
     if (session.mode === 'timed' && session.expiresAt) {
       return getRemainingSeconds(session.expiresAt);
@@ -538,7 +572,7 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
               </div>
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               {/* Flag Toggle Button */}
               <button
                 onClick={handleToggleFlag}
@@ -548,6 +582,22 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
               >
                 <Flag size={14} fill={currentAnswer.isFlagged ? 'currentColor' : 'none'} />
                 <span>{currentAnswer.isFlagged ? 'Flagged' : 'Flag (F)'}</span>
+              </button>
+
+              {/* Report Issue Button */}
+              <button
+                type="button"
+                onClick={() => {
+                  setReportNotice(null);
+                  setReportComment('');
+                  setShowReportModal(true);
+                }}
+                className="btn btn-sm btn-secondary"
+                title="Report issue with this question"
+                id="player-report-btn"
+              >
+                <FlagTriangleLeft size={14} />
+                <span>Report</span>
               </button>
             </div>
           </div>
@@ -801,6 +851,24 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
                   {currentQuestion.references.join('; ')}
                 </div>
               )}
+
+              {/* Log into Error Notebook Action */}
+              <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: '1px solid var(--border-ink)', display: 'flex', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setErrorNotice(null);
+                    setErrorTakeaway(currentQuestion.keyTakeaway || '');
+                    setErrorNotes(`Question: ${currentQuestion.topic}\nChosen option: ${currentAnswer.selectedOptionId || 'None'} (Correct: ${currentQuestion.correctOptionId})`);
+                    setShowErrorModal(true);
+                  }}
+                  className="btn btn-secondary btn-sm"
+                  id="player-log-error-btn"
+                >
+                  <FileText size={14} />
+                  <span>Log in Error Notebook</span>
+                </button>
+              </div>
             </div>
           )}
 
@@ -923,6 +991,301 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
                 Confirm Submission
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {/* Report Question Modal */}
+      {showReportModal && currentQuestion && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="report-modal-title"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(21, 26, 30, 0.75)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 100,
+            padding: '16px',
+          }}
+        >
+          <div
+            className="card-notebook"
+            style={{
+              width: '100%',
+              maxWidth: '500px',
+              padding: '24px',
+              backgroundColor: 'var(--bg-surface)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+              <FlagTriangleLeft size={22} style={{ color: 'var(--coral)' }} />
+              <h3 id="report-modal-title" style={{ fontSize: '1.25rem' }}>
+                Report Question <code>{currentQuestion.id}</code> (v{currentQuestion.version})
+              </h3>
+            </div>
+
+            <div
+              style={{
+                backgroundColor: 'var(--bg-canvas)',
+                padding: '10px 14px',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--border-ink)',
+                fontSize: '0.8rem',
+                color: 'var(--text-muted)',
+                marginBottom: '16px',
+              }}
+            >
+              <strong>Local Notice:</strong> Reports are saved locally to your browser's Content Workspace inbox. They are not sent to an external medical team.
+            </div>
+
+            {reportNotice ? (
+              <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                <CheckCircle size={32} style={{ color: 'var(--mint)', margin: '0 auto 8px' }} />
+                <div style={{ fontWeight: 700, fontSize: '1rem' }}>{reportNotice}</div>
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  You can inspect this item in the Content Workspace inbox.
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowReportModal(false)}
+                  className="btn btn-primary btn-sm"
+                  style={{ marginTop: '16px' }}
+                >
+                  Return to Question
+                </button>
+              </div>
+            ) : (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (onReportQuestion) {
+                    await onReportQuestion({
+                      questionId: currentQuestion.id,
+                      questionVersion: currentQuestion.version,
+                      issueType: reportIssueType,
+                      comment: reportComment.trim(),
+                    });
+                  }
+                  setReportNotice('Report saved to local review inbox.');
+                }}
+                style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}
+              >
+                <div>
+                  <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '6px' }}>
+                    Type of Issue
+                  </label>
+                  <select
+                    value={reportIssueType}
+                    onChange={(e) => setReportIssueType(e.target.value as ReportIssueType)}
+                    style={{
+                      width: '100%',
+                      padding: '8px 10px',
+                      borderRadius: 'var(--radius-sm)',
+                      border: '2px solid var(--border-ink)',
+                      fontSize: '0.88rem',
+                      backgroundColor: 'var(--bg-canvas)',
+                    }}
+                  >
+                    <option value="possible_error">Possible error in medical reasoning or answer key</option>
+                    <option value="ambiguous_wording">Ambiguous or confusing vignette wording</option>
+                    <option value="missing_broken_media">Missing or broken diagram / image</option>
+                    <option value="outdated_content">Outdated trial information or classification</option>
+                    <option value="typo">Typo or formatting irregularity</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '6px' }}>
+                    Additional Comment (Optional)
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={reportComment}
+                    onChange={(e) => setReportComment(e.target.value)}
+                    placeholder="Describe what looks incorrect..."
+                    style={{
+                      width: '100%',
+                      padding: '8px 10px',
+                      borderRadius: 'var(--radius-sm)',
+                      border: '2px solid var(--border-ink)',
+                      fontSize: '0.88rem',
+                      fontFamily: 'inherit',
+                      backgroundColor: 'var(--bg-canvas)',
+                    }}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowReportModal(false)}
+                    className="btn btn-secondary"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn btn-accent-coral"
+                  >
+                    Save Report Locally
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Error Notebook Log Modal */}
+      {showErrorModal && currentQuestion && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="error-modal-title"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(21, 26, 30, 0.75)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 100,
+            padding: '16px',
+          }}
+        >
+          <div
+            className="card-notebook"
+            style={{
+              width: '100%',
+              maxWidth: '520px',
+              padding: '24px',
+              backgroundColor: 'var(--bg-surface)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+              <FileText size={22} style={{ color: 'var(--coral)' }} />
+              <h3 id="error-modal-title" style={{ fontSize: '1.25rem' }}>
+                Log into Error Notebook
+              </h3>
+            </div>
+
+            {errorNotice ? (
+              <div style={{ textAlign: 'center', padding: '20px 0' }}>
+                <CheckCircle size={32} style={{ color: 'var(--mint)', margin: '0 auto 8px' }} />
+                <div style={{ fontWeight: 700, fontSize: '1rem' }}>{errorNotice}</div>
+                <button
+                  type="button"
+                  onClick={() => setShowErrorModal(false)}
+                  className="btn btn-primary btn-sm"
+                  style={{ marginTop: '16px' }}
+                >
+                  Back to Question
+                </button>
+              </div>
+            ) : (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (onAddToErrorNotebook) {
+                    await onAddToErrorNotebook(
+                      currentQuestion,
+                      currentAnswer.selectedOptionId,
+                      errorCause,
+                      errorNotes.trim(),
+                      errorTakeaway.trim()
+                    );
+                  }
+                  setErrorNotice('Logged to your Error Notebook.');
+                }}
+                style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}
+              >
+                <div>
+                  <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '6px' }}>
+                    Self-Identified Cause of Error
+                  </label>
+                  <select
+                    value={errorCause}
+                    onChange={(e) => setErrorCause(e.target.value as ErrorCause)}
+                    style={{
+                      width: '100%',
+                      padding: '8px 10px',
+                      borderRadius: 'var(--radius-sm)',
+                      border: '2px solid var(--border-ink)',
+                      fontSize: '0.88rem',
+                      backgroundColor: 'var(--bg-canvas)',
+                    }}
+                  >
+                    <option value="knowledge_gap">Knowledge Gap (didn't know fact or formula)</option>
+                    <option value="reasoning_mistake">Reasoning Mistake (fell for clinical distractor)</option>
+                    <option value="misread_question">Misread Question (missed a crucial negative or clue)</option>
+                    <option value="time_pressure">Time Pressure (rushed calculation)</option>
+                    <option value="other">Other / Slip</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '6px' }}>
+                    Personal Takeaway
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={errorTakeaway}
+                    onChange={(e) => setErrorTakeaway(e.target.value)}
+                    placeholder="Short principle to remember..."
+                    required
+                    style={{
+                      width: '100%',
+                      padding: '8px 10px',
+                      borderRadius: 'var(--radius-sm)',
+                      border: '2px solid var(--border-ink)',
+                      fontSize: '0.88rem',
+                      fontFamily: 'inherit',
+                      backgroundColor: 'var(--bg-canvas)',
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '6px' }}>
+                    Reflection Notes
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={errorNotes}
+                    onChange={(e) => setErrorNotes(e.target.value)}
+                    placeholder="Why did option X look tempting?"
+                    style={{
+                      width: '100%',
+                      padding: '8px 10px',
+                      borderRadius: 'var(--radius-sm)',
+                      border: '2px solid var(--border-ink)',
+                      fontSize: '0.88rem',
+                      fontFamily: 'inherit',
+                      backgroundColor: 'var(--bg-canvas)',
+                    }}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowErrorModal(false)}
+                    className="btn btn-secondary"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                  >
+                    Save Entry
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}
