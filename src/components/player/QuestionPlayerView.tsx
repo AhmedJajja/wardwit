@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { DisclaimerBanner } from '../common/DisclaimerBanner';
+import { TytoMascot } from '../mascot/TytoMascot';
+import { EducationalDiagram } from '../common/EducationalDiagram';
+import { AskTytoSection } from './AskTytoSection';
 import { getRemainingSeconds, isTimerExpired, formatRemainingTime } from '../../domain/timer';
 import type {
   StudySession,
@@ -8,6 +11,8 @@ import type {
   ReportIssueType,
   ErrorCause,
   Question,
+  QuestionUserAnswer,
+  SaveToReviewResult,
 } from '../../domain/types';
 import {
   Flag,
@@ -25,13 +30,16 @@ import {
   Clock,
   FlagTriangleLeft,
   FileText,
+  Edit3,
+  Bookmark,
+  CheckCheck,
 } from 'lucide-react';
 
 interface QuestionPlayerViewProps {
   session: StudySession;
   settings: UserSettings;
   onSaveSession: (updated: StudySession) => Promise<void>;
-  onFinishSession: (session: StudySession) => void;
+  onFinishSession: (session: StudySession) => Promise<void> | void;
   onExitToDashboard: () => void;
   onReportQuestion?: (report: {
     questionId: string;
@@ -46,6 +54,11 @@ interface QuestionPlayerViewProps {
     notes: string,
     takeaway: string
   ) => Promise<void>;
+  onSaveQuestionToReview?: (
+    question: Question,
+    answer?: QuestionUserAnswer
+  ) => Promise<SaveToReviewResult>;
+  onRecordTutorAnswer?: (questionId: string) => Promise<void>;
 }
 
 export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
@@ -56,14 +69,18 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
   onExitToDashboard,
   onReportQuestion,
   onAddToErrorNotebook,
+  onSaveQuestionToReview,
+  onRecordTutorAnswer,
 }) => {
   const [session, setSession] = useState<StudySession>(initialSession);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
+  const [finishError, setFinishError] = useState<string | null>(null);
   const [showSubmitModal, setShowSubmitModal] = useState<boolean>(false);
   const [showReportModal, setShowReportModal] = useState<boolean>(false);
   const [reportIssueType, setReportIssueType] = useState<ReportIssueType>('possible_error');
   const [reportComment, setReportComment] = useState<string>('');
   const [reportNotice, setReportNotice] = useState<string | null>(null);
+  const [showScratchpad, setShowScratchpad] = useState<boolean>(false);
 
   const [showErrorModal, setShowErrorModal] = useState<boolean>(false);
   const [errorCause, setErrorCause] = useState<ErrorCause>('knowledge_gap');
@@ -93,6 +110,44 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
 
   // Question timer tracker
   const questionStartTimeRef = useRef<number>(Date.now());
+  const isSubmittingRef = useRef<boolean>(false);
+
+  // Safe idempotent finalize trigger with awaitable completion and failure lock release
+  const triggerFinish = useCallback(
+    async (targetSession: StudySession) => {
+      if (isSubmittingRef.current) return;
+      isSubmittingRef.current = true;
+      setFinishError(null);
+      try {
+        await onFinishSession(targetSession);
+      } catch (err: any) {
+        console.error('Failed to complete session:', err);
+        setFinishError(err?.message || 'Storage error: Unable to complete and persist session.');
+        isSubmittingRef.current = false; // Reset submission lock so retry works
+      }
+    },
+    [onFinishSession]
+  );
+
+  const [saveToReviewNotice, setSaveToReviewNotice] = useState<{
+    status: 'saved' | 'already_saved' | 'error';
+    message: string;
+  } | null>(null);
+
+  const handleSaveToReview = async () => {
+    if (!currentQuestion || !onSaveQuestionToReview) return;
+    setSaveToReviewNotice(null);
+    try {
+      const res = await onSaveQuestionToReview(currentQuestion, currentAnswer);
+      setSaveToReviewNotice(res);
+      setTimeout(() => setSaveToReviewNotice(null), 4000);
+    } catch (err: any) {
+      setSaveToReviewNotice({
+        status: 'error',
+        message: err.message || 'Failed to save question to Review.',
+      });
+    }
+  };
 
   // Autosave helper with debounce/immediate trigger
   const persistSession = useCallback(
@@ -108,27 +163,6 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
     },
     [onSaveSession]
   );
-
-  // Timed mode interval countdown based on deadline
-  useEffect(() => {
-    if (session.mode !== 'timed' || !session.expiresAt || session.status === 'completed') {
-      return;
-    }
-
-    const interval = setInterval(() => {
-      const now = Date.now();
-      const secs = getRemainingSeconds(session.expiresAt!, now);
-      setRemainingSecs(secs);
-
-      if (isTimerExpired(session.expiresAt!, now)) {
-        clearInterval(interval);
-        // Time expired! Auto-finalize session
-        onFinishSession(session);
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [session, onFinishSession]);
 
   // Record time spent on current question when leaving it
   const updateTimeSpent = useCallback(() => {
@@ -156,6 +190,43 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
     };
     return updatedSession;
   }, [session, currentQuestion]);
+
+  // Timed mode interval countdown based on deadline + inactive tab expiration
+  useEffect(() => {
+    if (session.mode !== 'timed' || !session.expiresAt || session.status === 'completed') {
+      return;
+    }
+
+    const checkAndHandleExpiration = () => {
+      if (isSubmittingRef.current) return;
+      const now = Date.now();
+      const secs = getRemainingSeconds(session.expiresAt!, now);
+      setRemainingSecs(secs);
+
+      if (isTimerExpired(session.expiresAt!, now)) {
+        const withTime = updateTimeSpent();
+        triggerFinish(withTime);
+      }
+    };
+
+    // Immediate check on mount or dependency update
+    checkAndHandleExpiration();
+
+    // Check immediately when browser tab regains visibility (inactive tab expiration)
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        checkAndHandleExpiration();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    const interval = setInterval(checkAndHandleExpiration, 1000);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [session.mode, session.expiresAt, session.status, updateTimeSpent, triggerFinish]);
 
   // Navigate to question index
   const goToQuestion = (index: number) => {
@@ -221,8 +292,8 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
   };
 
   // Strike-through / eliminate option
-  const handleToggleEliminate = (optionId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleToggleEliminate = useCallback((optionId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
     if (!currentQuestion) return;
     if (session.mode === 'tutor' && isQuestionSubmitted) return;
 
@@ -256,6 +327,30 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
     };
     setSession(updated);
     persistSession(updated);
+  }, [currentQuestion, isQuestionSubmitted, session, persistSession]);
+
+  // Update scratchpad notes
+  const handleUpdateScratchpad = (note: string) => {
+    if (!currentQuestion) return;
+    const existing = session.answers[currentQuestion.id] || {
+      selectedOptionId: null,
+      isFlagged: false,
+      eliminatedOptionIds: [],
+      timeSpentSeconds: 0,
+    };
+
+    const updated: StudySession = {
+      ...session,
+      answers: {
+        ...session.answers,
+        [currentQuestion.id]: {
+          ...existing,
+          scratchpadNote: note,
+        },
+      },
+    };
+    setSession(updated);
+    persistSession(updated);
   };
 
   // Confidence rating
@@ -283,7 +378,7 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
   };
 
   // Tutor mode: Submit Answer
-  const handleSubmitTutorAnswer = () => {
+  const handleSubmitTutorAnswer = async () => {
     if (!currentQuestion || !currentAnswer.selectedOptionId) return;
 
     const existing = session.answers[currentQuestion.id];
@@ -299,19 +394,29 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
       },
     };
     setSession(updated);
-    persistSession(updated);
+    await persistSession(updated);
+    if (onRecordTutorAnswer) {
+      await onRecordTutorAnswer(currentQuestion.id);
+    }
   };
 
   // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Do not trigger if typing in an input or textarea
+      const key = e.key.toUpperCase();
+
+      // Scratchpad toggle (Alt+S) operates globally
+      if (e.altKey && (key === 'S' || e.code === 'KeyS')) {
+        e.preventDefault();
+        setShowScratchpad((prev) => !prev);
+        return;
+      }
+
+      // Do not trigger single-key hotkeys if typing in an input or textarea
       const target = e.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
         return;
       }
-
-      const key = e.key.toUpperCase();
 
       // Flag toggle (F)
       if (key === 'F') {
@@ -336,24 +441,44 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
         return;
       }
 
-      // Option selection by key (1-5 or A-E)
       const options = currentQuestion?.options || [];
-      let optionIndex = -1;
-      if (['1', '2', '3', '4', '5'].includes(e.key)) {
-        optionIndex = parseInt(e.key, 10) - 1;
-      } else if (['A', 'B', 'C', 'D', 'E'].includes(key)) {
-        optionIndex = key.charCodeAt(0) - 65;
+
+      // Strikethrough / eliminate option by Alt+1-5 or Alt+A-E
+      if (e.altKey) {
+        let elimIndex = -1;
+        if (['1', '2', '3', '4', '5'].includes(e.key)) {
+          elimIndex = parseInt(e.key, 10) - 1;
+        } else if (['A', 'B', 'C', 'D', 'E'].includes(key)) {
+          elimIndex = key.charCodeAt(0) - 65;
+        }
+
+        if (elimIndex >= 0 && elimIndex < options.length) {
+          e.preventDefault();
+          handleToggleEliminate(options[elimIndex].id);
+          return;
+        }
       }
 
-      if (optionIndex >= 0 && optionIndex < options.length) {
-        e.preventDefault();
-        handleSelectOption(options[optionIndex].id);
+      // Option selection by key (1-5 or A-E) without Alt
+      if (!e.altKey && !e.ctrlKey && !e.metaKey) {
+        let optionIndex = -1;
+        if (['1', '2', '3', '4', '5'].includes(e.key)) {
+          optionIndex = parseInt(e.key, 10) - 1;
+        } else if (['A', 'B', 'C', 'D', 'E'].includes(key)) {
+          optionIndex = key.charCodeAt(0) - 65;
+        }
+
+        if (optionIndex >= 0 && optionIndex < options.length) {
+          e.preventDefault();
+          handleSelectOption(options[optionIndex].id);
+          return;
+        }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentIndex, session, currentQuestion, handleToggleFlag, handleSelectOption]);
+  }, [currentIndex, session, currentQuestion, handleToggleFlag, handleSelectOption, handleToggleEliminate]);
 
   // Compute answered and unanswered counts
   const totalQuestions = session.questionSnapshots.length;
@@ -457,6 +582,54 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
         </div>
       </div>
 
+      {/* Finish Error Retry Banner */}
+      {finishError && (
+        <div
+          role="alert"
+          id="finish-error-banner"
+          style={{
+            backgroundColor: 'var(--coral-light)',
+            border: '2px solid var(--coral)',
+            borderRadius: 'var(--radius-md)',
+            padding: '12px 16px',
+            marginBottom: '16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <AlertTriangle size={20} style={{ color: 'var(--coral)', flexShrink: 0 }} />
+            <div>
+              <strong style={{ color: 'var(--coral)' }}>Submission Failed:</strong> {finishError}
+              <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                Your responses and timer are preserved. You can safely retry finalizing this block.
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+            <button
+              onClick={() => {
+                const withTime = updateTimeSpent();
+                triggerFinish(withTime);
+              }}
+              className="btn btn-primary btn-sm"
+              id="finish-retry-btn"
+            >
+              Retry Finish
+            </button>
+            <button
+              onClick={() => setFinishError(null)}
+              className="btn btn-secondary btn-sm"
+              id="finish-dismiss-btn"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Nonclinical Demo Content Banner */}
       <DisclaimerBanner className="mb-3" />
 
@@ -534,6 +707,69 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
         })}
       </div>
 
+      {/* Failure alerts with retry buttons */}
+      {finishError && (
+        <div
+          role="alert"
+          className="card-notebook"
+          style={{
+            backgroundColor: '#fef2f2',
+            border: '1px solid #f87171',
+            color: '#991b1b',
+            padding: '12px 16px',
+            marginBottom: '16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px',
+            flexWrap: 'wrap',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '1.2rem' }}>⚠️</span>
+            <span>Finalize Notice: {finishError}</span>
+          </div>
+          <button
+            onClick={() => {
+              const withTime = updateTimeSpent();
+              triggerFinish(withTime);
+            }}
+            className="btn btn-sm btn-primary"
+            id="retry-finish-session-btn"
+          >
+            Retry Finalize
+          </button>
+        </div>
+      )}
+
+      {saveStatus === 'error' && (
+        <div
+          role="alert"
+          className="card-notebook"
+          style={{
+            backgroundColor: '#fffbeb',
+            border: '1px solid #f59e0b',
+            color: '#92400e',
+            padding: '10px 14px',
+            marginBottom: '16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '10px',
+            flexWrap: 'wrap',
+          }}
+        >
+          <span>Autosave Notice: Failed to persist recent changes to local storage.</span>
+          <button
+            onClick={() => persistSession(session)}
+            className="btn btn-sm btn-secondary"
+            id="retry-autosave-btn"
+          >
+            Retry Save
+          </button>
+        </div>
+      )}
+
       {/* Main Exam View: Calm, focused field notebook card */}
       {currentQuestion && (
         <div
@@ -584,6 +820,18 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
                 <span>{currentAnswer.isFlagged ? 'Flagged' : 'Flag (F)'}</span>
               </button>
 
+              {/* Scratchpad Toggle Button */}
+              <button
+                type="button"
+                onClick={() => setShowScratchpad((prev) => !prev)}
+                className={`btn btn-sm ${showScratchpad ? 'btn-primary' : 'btn-secondary'}`}
+                title="Toggle in-exam scratchpad for calculations and notes (Shortcut: Alt+S)"
+                id="player-scratchpad-btn"
+              >
+                <Edit3 size={14} />
+                <span>{showScratchpad ? 'Hide Scratchpad' : 'Scratchpad (Alt+S)'}</span>
+              </button>
+
               {/* Report Issue Button */}
               <button
                 type="button"
@@ -602,6 +850,62 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
             </div>
           </div>
 
+          {/* In-Exam Scratchpad Drawer */}
+          {showScratchpad && (
+            <div
+              className="card-notebook"
+              style={{
+                marginBottom: '20px',
+                padding: '14px 18px',
+                backgroundColor: 'var(--bg-canvas)',
+                border: '2px dashed var(--primary-teal)',
+                borderRadius: 'var(--radius-md)',
+              }}
+              id="player-scratchpad-drawer"
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <FileText size={16} style={{ color: 'var(--primary-teal)' }} />
+                  <span style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-ink)' }}>
+                    In-Exam Scratchpad (Question {currentIndex + 1})
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Auto-saved • Alt+S to toggle</span>
+                  {currentAnswer.scratchpadNote && (
+                    <button
+                      type="button"
+                      onClick={() => handleUpdateScratchpad('')}
+                      className="btn btn-sm btn-outline"
+                      style={{ padding: '2px 6px', fontSize: '0.72rem' }}
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+              <textarea
+                value={currentAnswer.scratchpadNote || ''}
+                onChange={(e) => handleUpdateScratchpad(e.target.value)}
+                placeholder="Draft calculations, 2x2 epidemiology tables, differential notes..."
+                rows={3}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  borderRadius: 'var(--radius-sm)',
+                  border: '1.5px solid var(--border-ink)',
+                  backgroundColor: 'var(--bg-surface)',
+                  color: 'var(--text-ink)',
+                  fontFamily: 'monospace, var(--font-body)',
+                  fontSize: '0.88rem',
+                  lineHeight: 1.5,
+                  resize: 'vertical',
+                }}
+                id="player-scratchpad-input"
+              />
+            </div>
+          )}
+
           {/* Vignette / Prompt */}
           <div
             style={{
@@ -609,11 +913,29 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
               lineHeight: 1.7,
               color: 'var(--text-ink)',
               whiteSpace: 'pre-line',
-              marginBottom: '28px',
+              marginBottom: '20px',
             }}
           >
             {currentQuestion.vignette}
           </div>
+
+          {/* Question Vignette Media (Preserved before and during solving) */}
+          {(currentQuestion.questionMedia || currentQuestion.imageMetadata) && (
+            <EducationalDiagram
+              media={
+                currentQuestion.questionMedia || {
+                  url: currentQuestion.imageMetadata?.url,
+                  alt: currentQuestion.imageMetadata?.alt || 'Clinical scenario diagram',
+                  caption: currentQuestion.imageMetadata?.caption,
+                  provenance: currentQuestion.imageMetadata?.provenance
+                    ? { source: currentQuestion.imageMetadata.provenance }
+                    : undefined,
+                }
+              }
+              mode="vignette"
+              sessionMode={session.mode}
+            />
+          )}
 
           {/* Answer Options */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '28px' }}>
@@ -623,22 +945,28 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
               const isCorrect = currentQuestion.correctOptionId === option.id;
 
               // Tutor feedback revealed styling
-              let optionBorder = '2px solid var(--border-ink)';
-              let optionBg = 'var(--bg-canvas)';
-              let badgeColor = 'var(--bg-surface)';
+              let optionBorder = '1.5px solid var(--border-subtle)';
+              let optionBg = 'var(--bg-surface)';
+              let badgeBg = 'var(--bg-canvas)';
+              let badgeColor = 'var(--text-ink)';
 
               if (session.mode === 'tutor' && isQuestionSubmitted) {
                 if (isCorrect) {
-                  optionBorder = '2.5px solid var(--mint)';
+                  optionBorder = '2px solid var(--mint)';
                   optionBg = 'var(--mint-light)';
+                  badgeBg = 'var(--mint)';
+                  badgeColor = '#FFFFFF';
                 } else if (isSelected && !isCorrect) {
-                  optionBorder = '2.5px solid var(--coral)';
+                  optionBorder = '2px solid var(--coral)';
                   optionBg = 'var(--coral-light)';
+                  badgeBg = 'var(--coral)';
+                  badgeColor = '#FFFFFF';
                 }
               } else if (isSelected) {
-                optionBorder = '2.5px solid var(--primary-teal)';
+                optionBorder = '2px solid var(--primary-teal)';
                 optionBg = 'var(--primary-teal-subtle)';
-                badgeColor = 'var(--primary-teal)';
+                badgeBg = 'var(--primary-teal)';
+                badgeColor = '#FFFFFF';
               }
 
               return (
@@ -660,10 +988,17 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
                     transition: 'all 0.15s ease',
                   }}
                   id={`option-${option.id}`}
-                  role="checkbox"
+                  role="radio"
                   aria-checked={isSelected}
                   tabIndex={0}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSelectOption(option.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      if (!isEliminated) {
+                        handleSelectOption(option.id);
+                      }
+                    }
+                  }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flex: 1 }}>
                     {/* Letter Badge */}
@@ -671,14 +1006,14 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
                       style={{
                         width: '32px',
                         height: '32px',
-                        borderRadius: '6px',
-                        border: '2px solid var(--border-ink)',
+                        borderRadius: 'var(--radius-sm)',
+                        border: '1.5px solid rgba(15, 118, 110, 0.2)',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
                         fontWeight: 800,
-                        backgroundColor: isSelected && (!isQuestionSubmitted || session.mode !== 'tutor') ? 'var(--primary-teal)' : badgeColor,
-                        color: isSelected && (!isQuestionSubmitted || session.mode !== 'tutor') ? '#FFFFFF' : 'var(--text-ink)',
+                        backgroundColor: badgeBg,
+                        color: badgeColor,
                         flexShrink: 0,
                       }}
                     >
@@ -789,24 +1124,44 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
               style={{
                 marginTop: '24px',
                 padding: '24px',
-                backgroundColor: 'var(--bg-canvas)',
-                border: '2px solid var(--border-ink)',
+                backgroundColor: 'var(--bg-surface)',
+                border: '1px solid rgba(15, 118, 110, 0.18)',
+                borderRadius: 'var(--radius-lg)',
+                boxShadow: 'var(--card-shadow)',
               }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
-                <span className="badge badge-teal">Educational Rationale</span>
-                <h3 style={{ fontSize: '1.2rem' }}>Comprehensive Explanation</h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '16px', flexWrap: 'wrap' }}>
+                <TytoMascot
+                  state={currentAnswer.selectedOptionId === currentQuestion.correctOptionId ? 'celebrating' : 'encouraging'}
+                  size="sm"
+                  quietMode={_settings?.quietMode}
+                />
+                <div style={{ flex: 1, minWidth: '220px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                    <span className={`badge ${currentAnswer.selectedOptionId === currentQuestion.correctOptionId ? 'badge-teal' : 'badge-gold'}`}>
+                      {currentAnswer.selectedOptionId === currentQuestion.correctOptionId ? 'Correct Selection' : 'Review Point'}
+                    </span>
+                    <h3 style={{ fontSize: '1.15rem', margin: 0, color: 'var(--text-ink)' }}>
+                      {currentAnswer.selectedOptionId === currentQuestion.correctOptionId ? 'Spot-on clinical deduction!' : 'Key learning opportunity'}
+                    </h3>
+                  </div>
+                  <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)', margin: 0 }}>
+                    {currentAnswer.selectedOptionId === currentQuestion.correctOptionId
+                      ? 'Solid foundation. Review the full rationale below to solidify the concept.'
+                      : 'Step 1 tests this exact differentiator. Check the option breakdown below.'}
+                  </p>
+                </div>
               </div>
 
-              <p style={{ fontSize: '0.98rem', lineHeight: 1.6, marginBottom: '18px' }}>
+              <p style={{ fontSize: '0.98rem', lineHeight: 1.6, marginBottom: '18px', color: 'var(--text-ink)' }}>
                 {currentQuestion.explanation}
               </p>
 
               {/* High Yield Key Takeaway */}
               <div
                 style={{
-                  backgroundColor: 'var(--mint-light)',
-                  border: '2px solid var(--mint)',
+                  backgroundColor: 'var(--teal-50)',
+                  border: '1px solid rgba(15, 118, 110, 0.25)',
                   borderRadius: 'var(--radius-md)',
                   padding: '14px 18px',
                   marginBottom: '20px',
@@ -822,7 +1177,7 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
               </div>
 
               {/* Option Breakdown */}
-              <h4 style={{ fontSize: '0.95rem', fontWeight: 700, marginBottom: '10px' }}>
+              <h4 style={{ fontSize: '0.95rem', fontWeight: 700, marginBottom: '10px', color: 'var(--text-ink)' }}>
                 Option-by-Option Breakdown:
               </h4>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -831,9 +1186,9 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
                     key={opt.id}
                     style={{
                       padding: '10px 14px',
-                      backgroundColor: 'var(--bg-surface)',
+                      backgroundColor: 'var(--bg-canvas)',
                       borderRadius: 'var(--radius-sm)',
-                      border: '1px solid var(--border-ink)',
+                      border: '1px solid rgba(15, 118, 110, 0.12)',
                       fontSize: '0.88rem',
                       lineHeight: 1.5,
                     }}
@@ -852,22 +1207,90 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
                 </div>
               )}
 
-              {/* Log into Error Notebook Action */}
-              <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: '1px solid var(--border-ink)', display: 'flex', justifyContent: 'flex-end' }}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setErrorNotice(null);
-                    setErrorTakeaway(currentQuestion.keyTakeaway || '');
-                    setErrorNotes(`Question: ${currentQuestion.topic}\nChosen option: ${currentAnswer.selectedOptionId || 'None'} (Correct: ${currentQuestion.correctOptionId})`);
-                    setShowErrorModal(true);
-                  }}
-                  className="btn btn-secondary btn-sm"
-                  id="player-log-error-btn"
-                >
-                  <FileText size={14} />
-                  <span>Log in Error Notebook</span>
-                </button>
+              {/* Authored Explanation Diagram (Available only after submission in tutor mode) */}
+              {currentQuestion.explanationMedia && (
+                <div style={{ marginTop: '16px' }}>
+                  <EducationalDiagram
+                    media={currentQuestion.explanationMedia}
+                    mode="explanation"
+                    isRevealed={isQuestionSubmitted}
+                    sessionMode={session.mode}
+                    isSessionCompleted={session.status === 'completed'}
+                  />
+                </div>
+              )}
+
+              {/* Ask Tyto AI Study Companion (Embedded inside post-answer explanation) */}
+              <AskTytoSection
+                question={currentQuestion}
+                userAnswer={currentAnswer}
+                isTimedSessionActive={false}
+              />
+
+              {/* Actions: Save to Review & Log into Error Notebook */}
+              <div
+                style={{
+                  marginTop: '18px',
+                  paddingTop: '14px',
+                  borderTop: '1px solid rgba(15, 118, 110, 0.12)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexWrap: 'wrap',
+                  gap: '12px',
+                }}
+              >
+                <div>
+                  {saveToReviewNotice && (
+                    <span
+                      className={`badge ${
+                        saveToReviewNotice.status === 'saved'
+                          ? 'badge-teal'
+                          : saveToReviewNotice.status === 'already_saved'
+                          ? 'badge-gold'
+                          : 'badge-coral'
+                      }`}
+                      style={{ fontSize: '0.8rem' }}
+                    >
+                      {saveToReviewNotice.status === 'saved' ? <CheckCheck size={13} /> : null}
+                      <span>{saveToReviewNotice.message}</span>
+                    </span>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {onSaveQuestionToReview && (
+                    <button
+                      type="button"
+                      onClick={handleSaveToReview}
+                      className="btn btn-secondary btn-sm"
+                      id="player-save-to-review-btn"
+                      title="Save this question concept to your Review deck"
+                    >
+                      <Bookmark size={14} />
+                      <span>Save to Review</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setErrorNotice(null);
+                      setErrorTakeaway(currentQuestion.keyTakeaway || '');
+                      setErrorNotes(
+                        `Question: ${currentQuestion.topic}\nChosen option: ${
+                          currentAnswer.selectedOptionId || 'None'
+                        } (Correct: ${currentQuestion.correctOptionId})`
+                      );
+                      setShowErrorModal(true);
+                    }}
+                    className="btn btn-secondary btn-sm"
+                    id="player-log-error-btn"
+                  >
+                    <FileText size={14} />
+                    <span>Log in Error Notebook</span>
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -940,6 +1363,8 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
               maxWidth: '480px',
               padding: '24px',
               backgroundColor: 'var(--bg-surface)',
+              maxHeight: '90vh',
+              overflowY: 'auto',
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
@@ -983,7 +1408,7 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
                 onClick={() => {
                   setShowSubmitModal(false);
                   const withTime = updateTimeSpent();
-                  onFinishSession(withTime);
+                  triggerFinish(withTime);
                 }}
                 className="btn btn-primary"
                 id="submit-modal-confirm-btn"
@@ -1018,6 +1443,8 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
               maxWidth: '500px',
               padding: '24px',
               backgroundColor: 'var(--bg-surface)',
+              maxHeight: '90vh',
+              overflowY: 'auto',
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
@@ -1163,6 +1590,8 @@ export const QuestionPlayerView: React.FC<QuestionPlayerViewProps> = ({
               maxWidth: '520px',
               padding: '24px',
               backgroundColor: 'var(--bg-surface)',
+              maxHeight: '90vh',
+              overflowY: 'auto',
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>

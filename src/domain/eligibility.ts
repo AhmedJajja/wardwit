@@ -78,10 +78,18 @@ export function filterQuestionsForSession(
     (q) => q.editorialStatus === 'approved'
   );
 
-  const totalBankCount = approvedQuestions.length;
+  // 1. Filter by contentKind (educational vs demo vs all) to prevent cross-contamination
+  const kindFiltered = approvedQuestions.filter((q) => {
+    if (criteria.contentKind && criteria.contentKind !== 'all') {
+      return q.contentKind === criteria.contentKind;
+    }
+    return true;
+  });
 
-  // 1. Filter by taxonomy (System, Discipline, Topic)
-  const taxonomyFiltered = approvedQuestions.filter((q) => {
+  const totalBankCount = kindFiltered.length;
+
+  // 2. Filter by taxonomy (System, Discipline, Topic)
+  const taxonomyFiltered = kindFiltered.filter((q) => {
     if (criteria.systems.length > 0 && !criteria.systems.includes(q.system)) {
       return false;
     }

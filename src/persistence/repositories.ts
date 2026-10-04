@@ -12,6 +12,7 @@ import type {
   ErrorNotebookEntry,
   Flashcard,
   QuestionReport,
+  DiscoverCard,
 } from '../domain/types';
 
 export interface IQuestionRepository {
@@ -23,11 +24,26 @@ export interface IQuestionRepository {
   delete(id: string): Promise<void>;
 }
 
+export interface FinalizeSessionResult {
+  success: boolean;
+  alreadyCompleted: boolean;
+  session: StudySession;
+  updatedActivity?: DailyActivityRecord;
+  updatedReviewItems?: ReviewQueueItem[];
+  newReviewItems?: ReviewQueueItem[];
+  justQualified?: boolean;
+}
+
 export interface ISessionRepository {
   getAll(): Promise<StudySession[]>;
   getById(id: string): Promise<StudySession | undefined>;
   getActiveSession(): Promise<StudySession | undefined>;
   save(session: StudySession): Promise<void>;
+  finalizeSessionTransaction(
+    sessionToFinish: StudySession,
+    todayStr: string,
+    now?: number
+  ): Promise<FinalizeSessionResult>;
   delete(id: string): Promise<void>;
 }
 
@@ -42,6 +58,7 @@ export interface ISettingsRepository {
 }
 
 export interface IDailyActivityRepository {
+  getAll(): Promise<DailyActivityRecord[]>;
   getActivityForDate(dateStr: string): Promise<DailyActivityRecord | null>;
   recordActivity(
     dateStr: string,
@@ -50,6 +67,17 @@ export interface IDailyActivityRepository {
     sessionCompleted: boolean,
     flashcardsReviewedDelta?: number
   ): Promise<DailyActivityRecord>;
+  recordQualifyingAction(
+    dateStr: string,
+    canonicalItemId: string,
+    statsDelta?: {
+      questionsAnswered?: number;
+      correctCount?: number;
+      sessionsCompleted?: number;
+      flashcardsReviewed?: number;
+    },
+    now?: number
+  ): Promise<{ record: DailyActivityRecord; wasNewAction: boolean; justQualified: boolean }>;
   getRecentActivity(days: number): Promise<DailyActivityRecord[]>;
 }
 
@@ -71,6 +99,7 @@ export interface IErrorNotebookRepository {
 
 export interface IFlashcardRepository {
   getAll(): Promise<Flashcard[]>;
+  getById(id: string): Promise<Flashcard | undefined>;
   getDue(now?: number): Promise<Flashcard[]>;
   save(card: Flashcard): Promise<void>;
   saveBatch(cards: Flashcard[]): Promise<void>;
@@ -89,8 +118,16 @@ export interface IAchievementRepository {
   saveEarned(earnedMap: Record<string, number>): Promise<void>;
 }
 
+export interface IDiscoverCardRepository {
+  getAll(): Promise<DiscoverCard[]>;
+  getApproved(): Promise<DiscoverCard[]>;
+  getById(id: string): Promise<DiscoverCard | undefined>;
+  save(card: DiscoverCard): Promise<void>;
+  delete(id: string): Promise<void>;
+}
+
 export interface BackupData {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   exportedAt: string;
   app: 'WardWit';
   profile: UserProfile | null;
@@ -103,4 +140,5 @@ export interface BackupData {
   flashcards?: Flashcard[];
   questionReports?: QuestionReport[];
   achievements?: Record<string, number>;
+  discoverCards?: DiscoverCard[];
 }

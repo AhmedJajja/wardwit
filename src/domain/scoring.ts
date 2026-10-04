@@ -40,7 +40,9 @@ export function calculateSessionScore(session: StudySession): SessionScore {
     }
 
     // Confidence breakdown
-    const confLevel = ans?.confidence ?? 'unrated';
+    const rawConf = ans?.confidence as any;
+    const confLevel: 'confident' | 'unsure' | 'guessed' | 'unrated' =
+      rawConf && breakdown[rawConf as keyof typeof breakdown] ? rawConf : 'unrated';
     if (isAnswered) {
       breakdown[confLevel].total += 1;
       if (isCorrect) {

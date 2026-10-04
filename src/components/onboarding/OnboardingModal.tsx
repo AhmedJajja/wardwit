@@ -39,10 +39,12 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
     initialProfile.preferredStudyDays.length > 0 ? initialProfile.preferredStudyDays : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
   );
   const [dailyGoal, setDailyGoal] = useState<number>(initialProfile.dailyQuestionGoal || 10);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
   const toggleDay = (day: string) => {
+    setValidationError(null);
     if (selectedDays.includes(day)) {
       setSelectedDays(selectedDays.filter((d) => d !== day));
     } else {
@@ -52,6 +54,11 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
+    if (selectedDays.length === 0) {
+      setValidationError('Please select at least 1 planned study day per week.');
+      return;
+    }
+    setValidationError(null);
     onComplete({
       ...initialProfile,
       displayName: displayName.trim() || 'Doctor-in-Training',
@@ -95,14 +102,14 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
         }}
       >
         {/* Header with Mascot */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '20px', marginBottom: '20px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '20px', flexWrap: 'wrap' }}>
           <ClipMascot
             pose="welcome"
-            size={100}
+            size={90}
             speechBubble={quietMode ? undefined : 'Assalam-o-Alaikum! Let’s set up your field notebook.'}
             quietMode={quietMode}
           />
-          <div>
+          <div style={{ flex: '1 1 200px', minWidth: 0 }}>
             <span className="badge badge-teal" style={{ marginBottom: '6px' }}>Welcome to WardWit</span>
             <h2 id="onboarding-title" style={{ fontSize: '1.6rem', margin: '4px 0' }}>
               MBBS to Step 1 Study Setup
@@ -112,6 +119,24 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
             </p>
           </div>
         </div>
+
+        {validationError && (
+          <div
+            role="alert"
+            style={{
+              padding: '10px 14px',
+              backgroundColor: 'var(--coral-light)',
+              border: '1.5px solid var(--coral)',
+              borderRadius: 'var(--radius-sm)',
+              color: 'var(--coral)',
+              fontSize: '0.85rem',
+              fontWeight: 600,
+              marginBottom: '16px',
+            }}
+          >
+            {validationError}
+          </div>
+        )}
 
         <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {/* Display Name */}

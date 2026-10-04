@@ -1,9 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import confetti from 'canvas-confetti';
-import { ClipMascot } from '../mascot/ClipMascot';
+import { TytoMascot } from '../mascot/TytoMascot';
 import { DisclaimerBanner } from '../common/DisclaimerBanner';
+import { EducationalDiagram } from '../common/EducationalDiagram';
+import { AskTytoSection } from '../player/AskTytoSection';
+import { migrateLegacyImageMetadata } from '../../domain/mediaSanitizer';
 import { BRAND } from '../../config/brand.config';
-import type { StudySession, UserSettings } from '../../domain/types';
+import type { StudySession, UserSettings, Question, QuestionUserAnswer, SaveToReviewResult } from '../../domain/types';
 import {
   CheckCircle2,
   XCircle,
@@ -15,6 +18,8 @@ import {
   ChevronDown,
   ChevronUp,
   Sparkles,
+  Bookmark,
+  CheckCheck,
 } from 'lucide-react';
 
 interface ResultsViewProps {
@@ -22,6 +27,7 @@ interface ResultsViewProps {
   settings: UserSettings;
   onStartReviewSession: (questionIds: string[]) => void;
   onReturnToDashboard: () => void;
+  onSaveQuestionToReview?: (q: Question, ans?: QuestionUserAnswer) => Promise<SaveToReviewResult>;
 }
 
 export const ResultsView: React.FC<ResultsViewProps> = ({
@@ -29,9 +35,35 @@ export const ResultsView: React.FC<ResultsViewProps> = ({
   settings,
   onStartReviewSession,
   onReturnToDashboard,
+  onSaveQuestionToReview,
 }) => {
   const [filterMode, setFilterMode] = useState<'all' | 'incorrect' | 'flagged'>('all');
   const [expandedQuestionId, setExpandedQuestionId] = useState<string | null>(null);
+  const [saveNotices, setSaveNotices] = useState<Record<string, SaveToReviewResult>>({});
+
+  const handleSaveToReview = async (q: Question) => {
+    if (!onSaveQuestionToReview) return;
+    const ans = session.answers[q.id];
+    try {
+      const res = await onSaveQuestionToReview(q, ans);
+      setSaveNotices((prev) => ({ ...prev, [q.id]: res }));
+      setTimeout(() => {
+        setSaveNotices((prev) => {
+          const next = { ...prev };
+          delete next[q.id];
+          return next;
+        });
+      }, 4000);
+    } catch (err: any) {
+      setSaveNotices((prev) => ({
+        ...prev,
+        [q.id]: {
+          status: 'error',
+          message: err?.message || 'Storage error: Could not save to Review.',
+        },
+      }));
+    }
+  };
 
   const score = session.score || {
     totalQuestions: session.questionSnapshots.length,
@@ -57,15 +89,16 @@ export const ResultsView: React.FC<ResultsViewProps> = ({
         particleCount: 50,
         spread: 60,
         origin: { y: 0.6 },
-        colors: ['#145355', '#E06A55', '#F4A259', '#48A9A6'],
+        colors: ['#0F766E', '#14B8A6', '#F59E0B', '#E11D48'],
       });
     }
   }, [isCelebration, settings.quietMode]);
 
-  // Mascot quote selection
-  const mascotPose = isCelebration ? 'celebration' : 'encouragement';
-  const quotesPool = isCelebration ? BRAND.humorQuotes.celebration : BRAND.humorQuotes.encouragement;
-  const quote = quotesPool[Math.floor(Math.random() * quotesPool.length)];
+  // Select quote once per completion event rather than randomly on every render
+  const quote = useMemo(() => {
+    const quotesPool = isCelebration ? BRAND.humorQuotes.celebration : BRAND.humorQuotes.encouragement;
+    return quotesPool[Math.floor(Math.random() * quotesPool.length)];
+  }, [isCelebration]);
 
   // Filtered review questions
   const filteredQuestions = session.questionSnapshots.filter((q) => {
@@ -133,10 +166,11 @@ export const ResultsView: React.FC<ResultsViewProps> = ({
           </p>
         </div>
 
-        <ClipMascot
-          pose={mascotPose}
-          size={120}
+        <TytoMascot
+          state={isCelebration ? 'celebrating' : 'encouraging'}
+          size={125}
           speechBubble={quote}
+          speechPosition="left"
           quietMode={settings.quietMode}
         />
       </div>
@@ -470,6 +504,16 @@ export const ResultsView: React.FC<ResultsViewProps> = ({
                       {q.vignette}
                     </div>
 
+                    {/* Vignette Diagram / Media */}
+                    {(q.questionMedia || q.imageMetadata) && (
+                      <div style={{ marginBottom: '16px' }}>
+                        <EducationalDiagram
+                          media={q.questionMedia || migrateLegacyImageMetadata(q.imageMetadata)}
+                          mode="vignette"
+                        />
+                      </div>
+                    )}
+
                     {/* Options list */}
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
                       {q.options.map((opt) => {
@@ -526,6 +570,70 @@ export const ResultsView: React.FC<ResultsViewProps> = ({
                       <strong>Full Explanation: </strong>
                       {q.explanation}
                     </div>
+
+                    {/* Authored Explanation Diagram (Available after block completion) */}
+                    {q.explanationMedia && (
+                      <div style={{ marginTop: '16px' }}>
+                        <EducationalDiagram
+                          media={q.explanationMedia}
+                          mode="explanation"
+                          isRevealed={true}
+                          sessionMode={session.mode}
+                          isSessionCompleted={true}
+                        />
+                      </div>
+                    )}
+
+                    {/* Ask Tyto AI Study Companion */}
+                    <AskTytoSection
+                      question={q}
+                      userAnswer={ans}
+                      isTimedSessionActive={false}
+                    />
+
+                    {/* Action: Save to Review */}
+                    {onSaveQuestionToReview && (
+                      <div
+                        style={{
+                          marginTop: '16px',
+                          paddingTop: '12px',
+                          borderTop: '1px solid var(--border-subtle)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          flexWrap: 'wrap',
+                          gap: '10px',
+                        }}
+                      >
+                        <div>
+                          {saveNotices[q.id] && (
+                            <span
+                              className={`badge ${
+                                saveNotices[q.id].status === 'saved'
+                                  ? 'badge-teal'
+                                  : saveNotices[q.id].status === 'already_saved'
+                                  ? 'badge-gold'
+                                  : 'badge-coral'
+                              }`}
+                              style={{ fontSize: '0.8rem' }}
+                            >
+                              {saveNotices[q.id].status === 'saved' ? <CheckCheck size={13} /> : null}
+                              <span>{saveNotices[q.id].message}</span>
+                            </span>
+                          )}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => handleSaveToReview(q)}
+                          className="btn btn-secondary btn-sm"
+                          id={`results-save-to-review-${q.id}`}
+                        >
+                          <Bookmark size={14} />
+                          <span>Save to Review</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

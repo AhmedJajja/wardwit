@@ -1,23 +1,20 @@
-import React from 'react';
-import { ClipMascot } from '../mascot/ClipMascot';
+import React, { useMemo } from 'react';
+import { TytoMascot } from '../mascot/TytoMascot';
 import { DisclaimerBanner } from '../common/DisclaimerBanner';
 import { BRAND } from '../../config/brand.config';
-import { ALL_MILESTONES } from '../../domain/achievements';
 import type { UserProfile, StudySession, UserSettings, DailyActivityRecord } from '../../domain/types';
+import type { StreakState } from '../../domain/dailyHabit';
+import { DailyHabitWidget } from './DailyHabitWidget';
 import {
   Play,
   RotateCcw,
-  Flag,
-  Sparkles,
-  CheckCircle2,
-  Clock,
   ChevronRight,
   Target,
-  FileQuestion,
   Zap,
   Layers,
-  Award,
   FileText,
+  Clock,
+  Sparkles,
 } from 'lucide-react';
 
 interface DashboardViewProps {
@@ -32,6 +29,9 @@ interface DashboardViewProps {
   isPlannedStudyDay: boolean;
   earnedAchievements: Record<string, number>;
   totalApprovedQuestionsCount: number;
+  streakState?: StreakState;
+  justQualified?: boolean;
+  onClearJustQualified?: () => void;
   onStartNewSession: (pool?: 'all' | 'unused' | 'incorrect' | 'flagged') => void;
   onStartQuickSprint: () => void;
   onStartDueReviewsSession: () => void;
@@ -47,565 +47,407 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   settings,
   activeSession,
   recentSessions,
-  todayActivity,
+  todayActivity: _todayActivity,
   dueReviewsCount,
   dueFlashcardsCount,
-  availableUnusedCount,
   isPlannedStudyDay,
-  earnedAchievements,
-  totalApprovedQuestionsCount,
-  onStartNewSession,
+  streakState,
+  justQualified,
+  onClearJustQualified,
   onStartQuickSprint,
   onStartDueReviewsSession,
   onOpenFlashcards,
   onOpenErrorNotebook,
   onResumeSession,
   onViewResults,
-  onOpenSettings,
 }) => {
-  const answeredToday = todayActivity?.questionsAnswered || 0;
-  const goal = profile.dailyQuestionGoal || 10;
-  const progressPercent = Math.min(100, Math.round((answeredToday / goal) * 100));
-
   // Dynamic greeting based on time of day
-  const hour = new Date().getHours();
-  const timeGreeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-  const name = profile.displayName || 'Doctor';
+  const timeGreeting = useMemo(() => {
+    const hour = new Date().getHours();
+    return hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  }, []);
 
-  // Mascot speech selection
-  const welcomeQuotes = BRAND.humorQuotes.welcome;
-  const quote = welcomeQuotes[Math.floor(Math.random() * welcomeQuotes.length)];
+  const doctorName = profile.displayName ? `Dr. ${profile.displayName}` : 'Doctor';
 
-  const canLaunchSprint = totalApprovedQuestionsCount >= 5;
+  // Select microcopy once on mount rather than randomly on every render
+  const welcomeQuote = useMemo(() => {
+    const quotes = BRAND.humorQuotes.welcome;
+    return quotes[Math.floor(Math.random() * quotes.length)];
+  }, []);
+
+  // Filter completed sessions for recent list
+  const completedRecent = useMemo(() => {
+    return recentSessions
+      .filter((s) => s.status === 'completed' && s.score)
+      .slice(0, 3);
+  }, [recentSessions]);
 
   return (
-    <div className="container" style={{ paddingBottom: '48px', paddingTop: '20px' }}>
+    <div className="container" style={{ paddingBottom: '60px', paddingTop: '20px' }}>
       {/* Nonclinical Demo Content Banner */}
       <DisclaimerBanner className="mb-4" />
 
-      {/* Hero Welcome Card */}
-      <div
-        className="card-notebook"
+      {/* 1. TODAY HERO & GREETING */}
+      <section
+        className="card-notebook today-hero-card"
         style={{
-          marginTop: '16px',
-          padding: '24px 28px',
+          padding: '28px 32px',
+          marginBottom: '24px',
           display: 'flex',
           flexWrap: 'wrap',
           alignItems: 'center',
           justifyContent: 'space-between',
           gap: '24px',
-          background: 'linear-gradient(135deg, var(--bg-surface) 0%, var(--bg-surface-alt) 100%)',
+          background: 'linear-gradient(145deg, #FFFFFF 0%, #F0FDFA 100%)',
+          border: '1px solid rgba(15, 118, 110, 0.15)',
         }}
+        aria-label="Daily Greeting"
       >
-        <div style={{ flex: '1 1 340px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+        <div style={{ flex: '1 1 240px', minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', flexWrap: 'wrap' }}>
             <span className="badge badge-teal">{profile.mbbsYear}</span>
             {profile.college && (
-              <span className="badge badge-mint" title="Personal profile note only">
+              <span className="badge badge-mint" title="Personal profile note">
                 {profile.college}
               </span>
             )}
             <span
-              className={`badge ${isPlannedStudyDay ? 'badge-mint' : 'badge-demo'}`}
-              title={isPlannedStudyDay ? 'Scheduled study day' : 'Scheduled rest day — optional practice without guilt'}
+              className={`badge ${isPlannedStudyDay ? 'badge-teal' : 'badge-gold'}`}
+              title={isPlannedStudyDay ? 'Scheduled study day' : 'Scheduled rest day — optional practice'}
             >
-              {isPlannedStudyDay ? 'Study Day' : 'Rest Day (Optional Practice)'}
+              {isPlannedStudyDay ? 'Study Day' : 'Rest Day (Optional)'}
             </span>
+
+            {/* Streak slot: shown when real verified streak data exists */}
+            {streakState && streakState.currentStreak > 0 && (
+              <span className="badge badge-gold" id="today-streak-badge">
+                <Sparkles size={12} />
+                <span>{streakState.currentStreak} Day Streak</span>
+              </span>
+            )}
           </div>
 
-          <h1 style={{ fontSize: '1.9rem', marginBottom: '8px', color: 'var(--text-ink)' }}>
-            {timeGreeting}, {name}!
+          <h1 style={{ fontSize: '2.1rem', marginBottom: '8px', color: 'var(--text-ink)', letterSpacing: '-0.02em' }}>
+            {timeGreeting}, {doctorName}!
           </h1>
 
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.98rem', maxWidth: '520px', lineHeight: 1.5 }}>
+          <p style={{ color: 'var(--text-muted)', fontSize: '1rem', maxWidth: '520px', lineHeight: 1.55 }}>
             {profile.targetExamDate ? (
-              <span>Target Step 1 Date: <strong>{profile.targetExamDate}</strong>. </span>
+              <span>Target exam: <strong>{profile.targetExamDate}</strong>. </span>
             ) : null}
-            Your field notebook is ready. Work through daily goals, due reviews, and active recall flashcards.
+            Your field notebook is open. Work through your daily practice sprint and review mistakes to lock in clinical principles.
           </p>
-
-          {/* Primary Quick Start CTAs */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginTop: '20px' }}>
-            <button
-              onClick={() => onStartNewSession('all')}
-              className="btn btn-primary btn-lg"
-              id="dashboard-start-study-btn"
-            >
-              <Play size={18} fill="currentColor" />
-              <span>Start Studying</span>
-            </button>
-
-            {canLaunchSprint && (
-              <button
-                onClick={onStartQuickSprint}
-                className="btn btn-secondary btn-lg"
-                title="Launch a fast 5-question high-yield practice set"
-                id="dashboard-quick-sprint-btn"
-              >
-                <Zap size={18} style={{ color: 'var(--marigold)' }} />
-                <span>Quick 5-Q Sprint</span>
-              </button>
-            )}
-
-            {activeSession && (
-              <button
-                onClick={() => onResumeSession(activeSession.id)}
-                className="btn btn-accent-coral btn-lg"
-                id="dashboard-resume-btn"
-              >
-                <Clock size={18} />
-                <span>Resume Active Block</span>
-              </button>
-            )}
-          </div>
         </div>
 
-        {/* Mascot Greeting */}
-        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-          <ClipMascot
-            pose="welcome"
-            size={135}
-            speechBubble={quote}
+        {/* Medical Tyto Greeting Mascot */}
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flexShrink: 0, maxWidth: '100%' }}>
+          <TytoMascot
+            state="welcome"
+            size={120}
+            speechBubble={welcomeQuote}
+            speechPosition="top"
             quietMode={settings.quietMode}
           />
         </div>
-      </div>
+      </section>
 
-      {/* Active Session Alert Banner (if exists) */}
-      {activeSession && (
-        <div
+      {/* 2. PROMINENT SINGLE NEXT ACTION CARD (Duolingo-inspired clear next step) */}
+      <section style={{ marginBottom: '24px' }}>
+        {activeSession ? (
+          /* Resume Active Block CTA */
+          <div
+            className="card-notebook card-notebook-interactive"
+            style={{
+              padding: '24px 28px',
+              backgroundColor: '#FFFFFF',
+              border: '2px solid var(--coral)',
+              boxShadow: '0 8px 24px -4px rgba(225, 29, 72, 0.12)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '16px',
+            }}
+          >
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                <span className="badge badge-coral">Session In Progress</span>
+                <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                  Question {activeSession.currentIndex + 1} of {activeSession.questionSnapshots.length}
+                </span>
+              </div>
+              <h2 style={{ fontSize: '1.4rem', color: 'var(--text-ink)', marginBottom: '4px' }}>
+                {activeSession.name}
+              </h2>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+                Pick up right where you left off. Your responses and timer are preserved.
+              </p>
+            </div>
+
+            <button
+              onClick={() => onResumeSession(activeSession.id)}
+              className="btn btn-accent-coral btn-lg"
+              id="today-resume-primary-btn"
+              style={{ minWidth: '200px' }}
+            >
+              <Play size={18} fill="currentColor" />
+              <span>Resume Block</span>
+            </button>
+          </div>
+        ) : (
+          /* Start 5 Questions Quick Sprint CTA */
+          <div
+            className="card-notebook card-notebook-interactive"
+            style={{
+              padding: '28px 32px',
+              backgroundColor: '#FFFFFF',
+              border: '2px solid var(--primary-teal)',
+              boxShadow: '0 8px 25px -4px rgba(15, 118, 110, 0.14)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '20px',
+            }}
+          >
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                <span className="badge badge-teal">Daily Recommended Action</span>
+                <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                  5 Questions • ~10 mins
+                </span>
+              </div>
+              <h2 style={{ fontSize: '1.5rem', color: 'var(--text-ink)', marginBottom: '4px' }}>
+                5-Question Quick Sprint
+              </h2>
+              <p style={{ fontSize: '0.92rem', color: 'var(--text-muted)', maxWidth: '540px' }}>
+                Focused high-yield practice in tutor mode. Step-by-step clinical explanations and instant feedback.
+              </p>
+            </div>
+
+            <button
+              onClick={onStartQuickSprint}
+              className="btn btn-primary btn-lg"
+              id="today-start-sprint-btn"
+              style={{ minWidth: '220px' }}
+            >
+              <Zap size={18} fill="currentColor" />
+              <span>Start 5 Questions</span>
+            </button>
+          </div>
+        )}
+      </section>
+
+      {/* 3. DUE REVIEWS HUB (If reviews are due) */}
+      {dueReviewsCount > 0 && (
+        <section
           className="card-notebook"
           style={{
-            marginTop: '20px',
-            padding: '16px 20px',
-            backgroundColor: 'var(--coral-light)',
-            borderColor: 'var(--coral)',
+            padding: '20px 24px',
+            marginBottom: '24px',
+            backgroundColor: '#FFFBEB',
+            border: '1.5px solid #FDE68A',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
             flexWrap: 'wrap',
-            gap: '12px',
+            gap: '16px',
           }}
+          aria-label="Due Reviews Alert"
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <Clock size={24} style={{ color: 'var(--coral)' }} />
-            <div>
-              <div style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-ink)' }}>
-                Unfinished Session: {activeSession.name}
-              </div>
-              <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                Mode: <strong>{activeSession.mode.toUpperCase()}</strong> • {activeSession.questionSnapshots.length} questions •{' '}
-                {activeSession.mode === 'timed' && activeSession.expiresAt ? (
-                  <span>Deadline active</span>
-                ) : (
-                  <span>Tutor Mode</span>
-                )}
-              </div>
-            </div>
-          </div>
-          <button
-            onClick={() => onResumeSession(activeSession.id)}
-            className="btn btn-accent-coral btn-sm"
-          >
-            <span>Resume Now</span>
-            <ChevronRight size={14} />
-          </button>
-        </div>
-      )}
-
-      {/* Grid: Daily Study Plan, Practice Shortcuts & Review Queue */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
-          gap: '20px',
-          marginTop: '24px',
-        }}
-      >
-        {/* Daily Goal & Plan Card */}
-        <div className="card-notebook" style={{ padding: '22px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '14px' }}>
-            <div>
-              <span className="badge badge-teal" style={{ marginBottom: '4px' }}>Daily Study Plan</span>
-              <h2 style={{ fontSize: '1.25rem' }}>Question Progress</h2>
-            </div>
-            <Target size={24} style={{ color: 'var(--primary-teal)' }} />
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', margin: '12px 0' }}>
-            <span style={{ fontFamily: 'var(--font-heading)', fontSize: '2.4rem', fontWeight: 800, color: 'var(--primary-teal)' }}>
-              {answeredToday}
-            </span>
-            <span style={{ fontSize: '1.1rem', color: 'var(--text-muted)', fontWeight: 600 }}>
-              / {goal} questions
-            </span>
-          </div>
-
-          {/* Progress Bar */}
-          <div
-            style={{
-              width: '100%',
-              height: '14px',
-              backgroundColor: 'var(--bg-canvas)',
-              borderRadius: '999px',
-              border: '2px solid var(--border-ink)',
-              overflow: 'hidden',
-              marginBottom: '10px',
-            }}
-          >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
             <div
               style={{
-                width: `${progressPercent}%`,
-                height: '100%',
-                backgroundColor: progressPercent >= 100 ? 'var(--mint)' : 'var(--primary-teal)',
-                transition: 'width 0.4s ease',
+                width: '44px',
+                height: '44px',
+                borderRadius: '50%',
+                backgroundColor: 'var(--gold-light)',
+                border: '1px solid rgba(217, 119, 6, 0.3)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--gold-dark)',
+                flexShrink: 0,
               }}
-            />
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-            <span>
-              {progressPercent >= 100
-                ? 'Daily goal reached! Shaabash!'
-                : `${Math.max(0, goal - answeredToday)} remaining today`}
-            </span>
-            <span style={{ fontWeight: 700 }}>{progressPercent}%</span>
-          </div>
-
-          {/* Transparent Bank Capacity Diagnostic */}
-          {goal > totalApprovedQuestionsCount && (
-            <div style={{ marginTop: '12px', fontSize: '0.78rem', color: 'var(--coral)', backgroundColor: 'var(--coral-light)', padding: '6px 10px', borderRadius: 'var(--radius-sm)' }}>
-              Note: Current goal ({goal} Qs) exceeds total approved questions in bank ({totalApprovedQuestionsCount} Qs).
-            </div>
-          )}
-
-          <div style={{ marginTop: '16px', borderTop: '1px solid var(--bg-surface-alt)', paddingTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '0.78rem', color: 'var(--text-light)' }}>
-              {isPlannedStudyDay ? 'Scheduled study day' : 'Rest day: no penalty for skipping'}
-            </span>
-            <button
-              onClick={onOpenSettings}
-              className="btn btn-sm btn-outline"
-              style={{ fontSize: '0.75rem', padding: '4px 8px' }}
             >
-              Adjust Goal
-            </button>
-          </div>
-        </div>
-
-        {/* Due Reviews & Flashcards Hub */}
-        <div className="card-notebook" style={{ padding: '22px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '14px' }}>
+              <RotateCcw size={22} />
+            </div>
             <div>
-              <span className="badge badge-mint" style={{ marginBottom: '4px' }}>Spaced Repetition</span>
-              <h2 style={{ fontSize: '1.25rem' }}>Due Recall Queues</h2>
+              <div style={{ fontWeight: 800, fontSize: '1.1rem', color: '#92400E' }}>
+                {dueReviewsCount} Question{dueReviewsCount === 1 ? '' : 's'} Due for Spaced Review
+              </div>
+              <div style={{ fontSize: '0.86rem', color: '#78350F' }}>
+                Strengthen concepts before recall fades. Mapped questions update your review intervals automatically.
+              </div>
             </div>
-            <RotateCcw size={22} style={{ color: 'var(--mint)' }} />
           </div>
 
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '14px' }}>
-            Spaced intervals for missed questions and flashcards due today:
-          </p>
+          <button
+            onClick={onStartDueReviewsSession}
+            className="btn btn-sm"
+            style={{
+              backgroundColor: '#D97706',
+              color: '#FFFFFF',
+              boxShadow: '0 3px 0 #92400E',
+            }}
+            id="today-start-reviews-btn"
+          >
+            <RotateCcw size={15} />
+            <span>Review Now ({dueReviewsCount})</span>
+          </button>
+        </section>
+      )}
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <button
-              onClick={onStartDueReviewsSession}
-              disabled={dueReviewsCount === 0}
-              className="btn btn-secondary card-notebook-interactive"
-              style={{
-                justifyContent: 'space-between',
-                padding: '10px 14px',
-                opacity: dueReviewsCount === 0 ? 0.6 : 1,
-              }}
-              id="dashboard-due-reviews-btn"
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <RotateCcw size={18} style={{ color: 'var(--coral)' }} />
-                <span style={{ fontWeight: 600 }}>Due Question Reviews</span>
-              </div>
-              <span className="badge badge-coral">{dueReviewsCount} Due</span>
-            </button>
+      {/* 4. COMPACT PROGRESS & STUDY TOOLS */}
+      <section
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+          gap: '20px',
+          marginBottom: '28px',
+        }}
+      >
+        {/* Daily Habit & Streak Widget */}
+        {streakState ? (
+          <DailyHabitWidget
+            streakState={streakState}
+            quietMode={settings.quietMode}
+            justQualified={justQualified}
+            onClearJustQualified={onClearJustQualified}
+          />
+        ) : (
+          <div className="card-notebook" style={{ padding: '22px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+              <Target size={18} style={{ color: 'var(--primary-teal)' }} />
+              <h3 style={{ fontSize: '1.05rem', fontWeight: 700 }}>Daily Habit</h3>
+            </div>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Loading study streak...</p>
+          </div>
+        )}
 
+        {/* Quick Access to Flashcards & Error Notebook */}
+        <div
+          className="card-notebook"
+          style={{
+            padding: '20px',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center',
+            gap: '10px',
+          }}
+        >
+          <div style={{ fontSize: '0.78rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-light)', letterSpacing: '0.04em' }}>
+            Active Study Tools
+          </div>
+
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
             <button
               onClick={onOpenFlashcards}
-              className="btn btn-secondary card-notebook-interactive"
-              style={{ justifyContent: 'space-between', padding: '10px 14px' }}
-              id="dashboard-due-flashcards-btn"
+              className="btn btn-secondary btn-sm"
+              style={{ flex: '1 1 120px', minWidth: '110px', justifyContent: 'space-between', padding: '10px 14px' }}
+              id="today-open-flashcards-btn"
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <Layers size={18} style={{ color: 'var(--primary-teal)' }} />
-                <span style={{ fontWeight: 600 }}>Due Flashcards</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Layers size={16} style={{ color: 'var(--primary-teal)' }} />
+                <span>Cards</span>
               </div>
-              <span className="badge badge-teal">{dueFlashcardsCount} Due</span>
+              {dueFlashcardsCount > 0 && (
+                <span className="badge badge-coral" style={{ fontSize: '0.65rem' }}>
+                  {dueFlashcardsCount} Due
+                </span>
+              )}
             </button>
 
             <button
               onClick={onOpenErrorNotebook}
-              className="btn btn-secondary card-notebook-interactive"
-              style={{ justifyContent: 'space-between', padding: '10px 14px' }}
-              id="dashboard-open-error-notebook-btn"
+              className="btn btn-secondary btn-sm"
+              style={{ flex: '1 1 120px', minWidth: '110px', justifyContent: 'space-between', padding: '10px 14px' }}
+              id="today-open-errors-btn"
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <FileText size={18} style={{ color: 'var(--marigold)' }} />
-                <span style={{ fontWeight: 600 }}>Error Notebook Journal</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <FileText size={16} style={{ color: 'var(--coral)' }} />
+                <span>Mistake Log</span>
               </div>
-              <ChevronRight size={16} />
+              <ChevronRight size={14} style={{ color: 'var(--text-muted)' }} />
             </button>
           </div>
         </div>
+      </section>
 
-        {/* Practice Pool Shortcuts */}
-        <div className="card-notebook" style={{ padding: '22px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '14px' }}>
-            <div>
-              <span className="badge badge-coral" style={{ marginBottom: '4px' }}>Targeted Sets</span>
-              <h2 style={{ fontSize: '1.25rem' }}>Question Pools</h2>
-            </div>
-            <Sparkles size={24} style={{ color: 'var(--coral)' }} />
+      {/* 5. RECENT SESSIONS LIST (Compact, truthful history without endless panels) */}
+      {completedRecent.length > 0 && (
+        <section>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+            <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-ink)' }}>
+              Recent Practice Blocks
+            </h3>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+              Last {completedRecent.length} completed
+            </span>
           </div>
-
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '14px' }}>
-            Filter questions by status without repetition:
-          </p>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            <button
-              onClick={() => onStartNewSession('unused')}
-              className="btn btn-secondary card-notebook-interactive"
-              style={{ justifyContent: 'space-between', padding: '10px 14px' }}
-              id="shortcut-unused-btn"
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <FileQuestion size={18} style={{ color: 'var(--primary-teal)' }} />
-                <span style={{ fontWeight: 600 }}>Unused Questions</span>
-              </div>
-              <span className="badge badge-teal">{availableUnusedCount} left</span>
-            </button>
-
-            <button
-              onClick={() => onStartNewSession('incorrect')}
-              className="btn btn-secondary card-notebook-interactive"
-              style={{ justifyContent: 'space-between', padding: '10px 14px' }}
-              id="shortcut-incorrect-btn"
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <RotateCcw size={18} style={{ color: 'var(--coral)' }} />
-                <span style={{ fontWeight: 600 }}>Review Incorrects</span>
-              </div>
-              <ChevronRight size={16} />
-            </button>
-
-            <button
-              onClick={() => onStartNewSession('flagged')}
-              className="btn btn-secondary card-notebook-interactive"
-              style={{ justifyContent: 'space-between', padding: '10px 14px' }}
-              id="shortcut-flagged-btn"
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <Flag size={18} style={{ color: 'var(--marigold)' }} />
-                <span style={{ fontWeight: 600 }}>Flagged Questions</span>
-              </div>
-              <ChevronRight size={16} />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Verified Milestone Achievements Drawer */}
-      <div className="card-notebook" style={{ marginTop: '24px', padding: '24px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Award size={20} style={{ color: 'var(--marigold)' }} />
-              <h2 style={{ fontSize: '1.25rem' }}>Milestone Badges</h2>
-            </div>
-            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-              Earned strictly through verified study activity; no inflated streak counts.
-            </div>
-          </div>
-          <span className="badge badge-demo">
-            {Object.keys(earnedAchievements).length} of {ALL_MILESTONES.length} Unlocked
-          </span>
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
-          {ALL_MILESTONES.map((m) => {
-            const isEarned = Boolean(earnedAchievements[m.id]);
-            return (
-              <div
-                key={m.id}
-                style={{
-                  padding: '12px 14px',
-                  borderRadius: 'var(--radius-md)',
-                  border: isEarned ? '2px solid var(--mint)' : '1.5px dashed var(--border-ink)',
-                  backgroundColor: isEarned ? 'var(--mint-light)' : 'var(--bg-canvas)',
-                  opacity: isEarned ? 1 : 0.6,
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                  <span style={{ fontSize: '1.1rem' }}>
-                    {m.id === 'first-block' ? '📘' : m.id === 'chai-marathon' ? '☕' : m.id === 'error-detective' ? '🔍' : m.id === 'spaced-scholar' ? '🔄' : '⭐'}
-                  </span>
-                  <strong style={{ fontSize: '0.9rem', color: 'var(--text-ink)' }}>{m.title}</strong>
-                  {isEarned && <span className="badge badge-mint" style={{ fontSize: '0.68rem', padding: '2px 4px' }}>Earned</span>}
-                </div>
-                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: 1.35 }}>
-                  {m.description}
-                </div>
-                <div style={{ fontSize: '0.7rem', color: 'var(--text-light)', marginTop: '4px' }}>
-                  Criteria: {m.criteriaRule}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Recent Sessions Audit Trail */}
-      <div className="card-notebook" style={{ marginTop: '24px', padding: '24px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-          <div>
-            <span className="badge badge-mint" style={{ marginBottom: '4px' }}>Audit Trail</span>
-            <h2 style={{ fontSize: '1.35rem' }}>Recent Study Sessions</h2>
-          </div>
-          <button
-            onClick={() => onStartNewSession('all')}
-            className="btn btn-secondary btn-sm"
-          >
-            <span>Custom Session</span>
-          </button>
-        </div>
-
-        {recentSessions.length === 0 ? (
-          <div
-            style={{
-              padding: '36px 20px',
-              textAlign: 'center',
-              backgroundColor: 'var(--bg-canvas)',
-              borderRadius: 'var(--radius-md)',
-              border: '2px dashed var(--border-ink)',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '12px' }}>
-              <ClipMascot
-                pose="encouragement"
-                size={85}
-                speechBubble={settings.quietMode ? undefined : 'No sessions recorded yet. Ready to start block 1?'}
-                quietMode={settings.quietMode}
-              />
-            </div>
-            <h3 style={{ fontSize: '1.1rem', marginBottom: '6px' }}>No Sessions Recorded Yet</h3>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', maxWidth: '420px', margin: '0 auto 16px' }}>
-              Your completed blocks, scores, and confidence analyses will appear here. No fabricated stats or fake user history.
-            </p>
-            <button
-              onClick={() => onStartNewSession('all')}
-              className="btn btn-primary"
-            >
-              <Play size={16} fill="currentColor" />
-              <span>Launch Your First Session</span>
-            </button>
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {recentSessions.slice(0, 5).map((s) => {
-              const dateStr = new Date(s.createdAt).toLocaleDateString(undefined, {
-                month: 'short',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit',
-              });
-              const isCompleted = s.status === 'completed';
-
+            {completedRecent.map((s) => {
+              const score = s.score!;
               return (
                 <div
                   key={s.id}
                   className="card-notebook card-notebook-interactive"
+                  onClick={() => onViewResults(s.id)}
                   style={{
-                    padding: '14px 18px',
+                    padding: '14px 20px',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
-                    flexWrap: 'wrap',
+                    cursor: 'pointer',
                     gap: '12px',
-                    backgroundColor: 'var(--bg-surface)',
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                     <div
                       style={{
-                        width: '42px',
-                        height: '42px',
-                        borderRadius: '8px',
-                        backgroundColor: isCompleted ? 'var(--mint-light)' : 'var(--marigold-light)',
-                        border: '2px solid var(--border-ink)',
+                        width: '38px',
+                        height: '38px',
+                        borderRadius: 'var(--radius-md)',
+                        backgroundColor: score.percentage >= 70 ? 'var(--mint-light)' : 'var(--coral-light)',
+                        color: score.percentage >= 70 ? 'var(--mint)' : 'var(--coral)',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        fontWeight: 700,
-                        color: isCompleted ? 'var(--mint)' : 'var(--marigold)',
+                        fontWeight: 800,
+                        fontSize: '0.85rem',
+                        flexShrink: 0,
                       }}
                     >
-                      {isCompleted ? <CheckCircle2 size={20} /> : <Clock size={20} />}
+                      {score.percentage}%
                     </div>
-
                     <div>
-                      <div style={{ fontWeight: 700, fontSize: '0.96rem', color: 'var(--text-ink)' }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-ink)' }}>
                         {s.name}
                       </div>
-                      <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', gap: '10px' }}>
-                        <span>{dateStr}</span>
+                      <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', display: 'flex', gap: '10px', marginTop: '2px' }}>
+                        <span>{score.correctCount} / {score.totalQuestions} Correct</span>
                         <span>•</span>
-                        <span>{s.questionSnapshots.length} Questions</span>
-                        <span>•</span>
-                        <span style={{ textTransform: 'capitalize' }}>{s.mode} Mode</span>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                          <Clock size={12} />
+                          {Math.round(score.totalTimeSeconds / 60)}m
+                        </span>
                       </div>
                     </div>
                   </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    {isCompleted && s.score && (
-                      <div style={{ textAlign: 'right' }}>
-                        <div
-                          style={{
-                            fontFamily: 'var(--font-heading)',
-                            fontWeight: 800,
-                            fontSize: '1.25rem',
-                            color: s.score.percentage >= 70 ? 'var(--mint)' : s.score.percentage >= 50 ? 'var(--marigold)' : 'var(--coral)',
-                          }}
-                        >
-                          {s.score.percentage}%
-                        </div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--text-light)' }}>
-                          {s.score.correctCount}/{s.score.totalQuestions} Correct
-                        </div>
-                      </div>
-                    )}
-
-                    {isCompleted ? (
-                      <button
-                        onClick={() => onViewResults(s.id)}
-                        className="btn btn-secondary btn-sm"
-                      >
-                        <span>View Results</span>
-                        <ChevronRight size={14} />
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => onResumeSession(s.id)}
-                        className="btn btn-accent-coral btn-sm"
-                      >
-                        <span>Resume</span>
-                        <Play size={14} fill="currentColor" />
-                      </button>
-                    )}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.85rem', color: 'var(--primary-teal)', fontWeight: 600 }}>
+                    <span>Inspect Results</span>
+                    <ChevronRight size={15} />
                   </div>
                 </div>
               );
             })}
           </div>
-        )}
-      </div>
+        </section>
+      )}
     </div>
   );
 };
+
+export default DashboardView;

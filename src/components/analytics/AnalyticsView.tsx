@@ -36,7 +36,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({ sessions, settings
         <ClipMascot
           pose="focus"
           size={95}
-          speechBubble={settings.quietMode ? undefined : 'First attempts measure baseline memory; repeats show review mastery.'}
+          speechBubble={settings.quietMode ? undefined : 'First attempts measure baseline recall; repeat attempts measure spaced review retention.'}
           quietMode={settings.quietMode}
         />
       </div>

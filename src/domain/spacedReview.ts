@@ -5,7 +5,13 @@
  * not an AI-powered or clinically validated algorithm.
  */
 
-import type { Question, ReviewQueueItem, ReviewItemReason } from './types';
+import type {
+  Question,
+  ReviewQueueItem,
+  ReviewItemReason,
+  ConfidenceLevel,
+  ReviewQuestionMapping,
+} from './types';
 
 export const REVIEW_INTERVAL_DAYS = [1, 3, 7, 14];
 
@@ -34,16 +40,34 @@ export function createReviewQueueItem(
 
 /**
  * Updates a review item after the student reviews it.
- * If passed (answered correctly), advance to next interval;
- * if failed, reset to 1-day interval.
+ * - If incorrect or marked guessed/unsure: keep in practice at stage 0 (1 day), never graduate.
+ * - If correct with high/medium confidence: advance to next interval.
+ *   Graduates to 'completed' after passing the final 14-day stage.
+ * 
+ * Supports polymorphic arguments for backward compatibility:
+ * recordReviewAttempt(item, isCorrect, confidence?, now?)
+ * recordReviewAttempt(item, isCorrect, now?)
  */
 export function recordReviewAttempt(
   item: ReviewQueueItem,
   isCorrect: boolean,
-  now = Date.now()
+  confidenceOrNow?: ConfidenceLevel | number,
+  maybeNow?: number
 ): ReviewQueueItem {
-  if (!isCorrect) {
-    // Reset to stage 0 (1 day)
+  let confidence: ConfidenceLevel | undefined;
+  let now: number;
+
+  if (typeof confidenceOrNow === 'number') {
+    now = confidenceOrNow;
+  } else {
+    confidence = confidenceOrNow;
+    now = typeof maybeNow === 'number' ? maybeNow : Date.now();
+  }
+
+  const isGuessedOrUnsure = confidence === 'guessed' || confidence === 'unsure';
+
+  // If failed OR guessed/unsure, keep in practice at stage 0 (1 day), never graduate
+  if (!isCorrect || isGuessedOrUnsure) {
     const intervalDays = REVIEW_INTERVAL_DAYS[0];
     return {
       ...item,
@@ -62,7 +86,7 @@ export function recordReviewAttempt(
     : currentIdx;
   const intervalDays = REVIEW_INTERVAL_DAYS[nextIdx];
 
-  // If graduated past 14 days, mark completed or keep at 14d
+  // If graduated past 14 days, mark completed
   const isGraduated = currentIdx === REVIEW_INTERVAL_DAYS.length - 1;
 
   return {
@@ -90,8 +114,10 @@ export interface ReviewQuestionResolution {
 
 /**
  * Resolves a question for a review queue item:
- * If an alternate approved question with the same conceptId exists, offer it;
- * otherwise return the original question and indicate that the original is being repeated.
+ * - Preserves demo versus educational content boundaries (never mix kinds).
+ * - Deterministically selects an alternate approved question with matching conceptId if available.
+ * - Otherwise returns the original question.
+ * - Returns null if the item cannot be resolved (original question not found).
  */
 export function resolveReviewQuestion(
   item: ReviewQueueItem,
@@ -100,14 +126,92 @@ export function resolveReviewQuestion(
   const original = allApprovedQuestions.find((q) => q.id === item.questionId);
   if (!original) return null;
 
+  const originalKind = original.contentKind || 'educational';
+
   if (item.conceptId) {
-    const alternate = allApprovedQuestions.find(
-      (q) => q.conceptId === item.conceptId && q.id !== item.questionId && q.editorialStatus === 'approved'
-    );
-    if (alternate) {
-      return { question: alternate, isOriginal: false, conceptId: item.conceptId };
+    // Find candidate alternates preserving contentKind and approved status
+    const candidateAlternates = allApprovedQuestions
+      .filter(
+        (q) =>
+          q.conceptId === item.conceptId &&
+          q.id !== item.questionId &&
+          q.editorialStatus === 'approved' &&
+          (q.contentKind || 'educational') === originalKind
+      )
+      .sort((a, b) => a.id.localeCompare(b.id)); // Deterministic ordering
+
+    if (candidateAlternates.length > 0) {
+      return { question: candidateAlternates[0], isOriginal: false, conceptId: item.conceptId };
     }
   }
 
   return { question: original, isOriginal: true, conceptId: item.conceptId };
+}
+
+export interface DueReviewSessionPlan {
+  questions: Question[];
+  reviewMappings: Record<string, ReviewQuestionMapping>;
+  unresolvableItemIds: string[];
+}
+
+/**
+ * Builds an explicit, deterministic plan for a due-review session:
+ * - Maps each displayed review question to originating review queue item(s).
+ * - Handles multiple items resolving to the same question deterministically by grouping item IDs.
+ * - Filters and logs unresolvable items without silently crediting completion.
+ */
+export function buildDueReviewSessionPlan(
+  dueItems: ReviewQueueItem[],
+  allApprovedQuestions: Question[]
+): DueReviewSessionPlan {
+  const questionMap = new Map<string, Question>();
+  const reviewMappings: Record<string, ReviewQuestionMapping> = {};
+  const unresolvableItemIds: string[] = [];
+
+  // Sort due items deterministically by dueAt then id
+  const sortedItems = [...dueItems].sort((a, b) => {
+    if (a.dueAt !== b.dueAt) return a.dueAt - b.dueAt;
+    return a.id.localeCompare(b.id);
+  });
+
+  for (const item of sortedItems) {
+    const resolution = resolveReviewQuestion(item, allApprovedQuestions);
+    if (!resolution) {
+      unresolvableItemIds.push(item.id);
+      continue;
+    }
+
+    const { question, isOriginal } = resolution;
+    const qId = question.id;
+
+    if (!questionMap.has(qId)) {
+      questionMap.set(qId, question);
+      reviewMappings[qId] = {
+        questionId: qId,
+        originatingItemIds: [item.id],
+        originalQuestionIds: [item.questionId],
+        wasAlternate: !isOriginal,
+      };
+    } else {
+      // Multiple items resolved to the same question: group them deterministically
+      const existingMapping = reviewMappings[qId];
+      if (!existingMapping.originatingItemIds.includes(item.id)) {
+        existingMapping.originatingItemIds.push(item.id);
+        existingMapping.originatingItemIds.sort();
+      }
+      if (!existingMapping.originalQuestionIds.includes(item.questionId)) {
+        existingMapping.originalQuestionIds.push(item.questionId);
+        existingMapping.originalQuestionIds.sort();
+      }
+      if (!isOriginal) {
+        existingMapping.wasAlternate = true;
+      }
+    }
+  }
+
+  return {
+    questions: Array.from(questionMap.values()),
+    reviewMappings,
+    unresolvableItemIds,
+  };
 }

@@ -22,6 +22,23 @@ describe('Content Workspace & Question Import Integrity', () => {
     expect(val.errors.length).toBeGreaterThan(0);
     expect(val.errors.some((e) => e.includes('At least 2 answer options'))).toBe(true);
     expect(val.errors.some((e) => e.includes('must match one of the available options'))).toBe(true);
+
+    const educationalNoReviewer: Partial<Question> = {
+      id: 'edu-test-1',
+      contentKind: 'educational',
+      vignette: 'A valid 15-character clinical prompt.',
+      options: [{ id: 'A', text: 'Option A' }, { id: 'B', text: 'Option B' }],
+      correctOptionId: 'A',
+      explanation: 'Detailed comprehensive explanation here.',
+      learningObjective: 'Core objective.',
+      system: 'Cardiovascular',
+      discipline: 'Pathology',
+      topic: 'Myocardial Infarction',
+      reviewer: { name: null, role: null },
+    };
+    const eduVal = validateQuestionForApproval(educationalNoReviewer);
+    expect(eduVal.isValid).toBe(false);
+    expect(eduVal.errors.some((e) => e.includes('require a named reviewer'))).toBe(true);
   });
 
   it('dry-run flags duplicate IDs and invalid rows without modifying data', () => {

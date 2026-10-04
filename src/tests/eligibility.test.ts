@@ -121,4 +121,76 @@ describe('Session Eligibility and Filters', () => {
     expect(unusedResult.eligibleQuestions.some((q) => q.id === 'demo-001')).toBe(false);
     expect(unusedResult.eligibleQuestions.some((q) => q.id === 'demo-002')).toBe(false);
   });
+
+  it('strictly excludes draft and archived questions from study sessions', () => {
+    const history = {
+      answeredQuestionIds: new Set<string>(),
+      incorrectQuestionIds: new Set<string>(),
+      flaggedQuestionIds: new Set<string>(),
+    };
+
+    const mixedBank = [
+      { ...DEMO_QUESTIONS[0], id: 'q-approved', editorialStatus: 'approved' as const },
+      { ...DEMO_QUESTIONS[1], id: 'q-draft', editorialStatus: 'draft' as const },
+      { ...DEMO_QUESTIONS[2], id: 'q-archived', editorialStatus: 'archived' as const },
+      { ...DEMO_QUESTIONS[3], id: 'q-in-review', editorialStatus: 'in_review' as const },
+    ];
+
+    const criteria: SessionFilterCriteria = {
+      systems: [],
+      disciplines: [],
+      topics: [],
+      pool: 'all',
+      count: 10,
+      mode: 'tutor',
+    };
+
+    const result = filterQuestionsForSession(mixedBank, history, criteria);
+    expect(result.eligibleQuestions.map((q) => q.id)).toEqual(['q-approved']);
+    expect(result.eligibleQuestions.some((q) => q.id === 'q-draft')).toBe(false);
+    expect(result.eligibleQuestions.some((q) => q.id === 'q-archived')).toBe(false);
+    expect(result.eligibleQuestions.some((q) => q.id === 'q-in-review')).toBe(false);
+  });
+
+  it('prevents cross-contamination between educational and demo content', () => {
+    const history = {
+      answeredQuestionIds: new Set<string>(),
+      incorrectQuestionIds: new Set<string>(),
+      flaggedQuestionIds: new Set<string>(),
+    };
+
+    const mixedBank = [
+      { ...DEMO_QUESTIONS[0], id: 'q-demo-1', contentKind: 'demo' as const, editorialStatus: 'approved' as const },
+      { ...DEMO_QUESTIONS[1], id: 'q-demo-2', contentKind: 'demo' as const, editorialStatus: 'approved' as const },
+      { ...DEMO_QUESTIONS[2], id: 'q-edu-1', contentKind: 'educational' as const, editorialStatus: 'approved' as const },
+    ];
+
+    // Request educational content only
+    const eduCriteria: SessionFilterCriteria = {
+      systems: [],
+      disciplines: [],
+      topics: [],
+      pool: 'all',
+      count: 10,
+      mode: 'tutor',
+      contentKind: 'educational',
+    };
+
+    const eduResult = filterQuestionsForSession(mixedBank, history, eduCriteria);
+    expect(eduResult.eligibleQuestions.map((q) => q.id)).toEqual(['q-edu-1']);
+
+    // Request demo content only
+    const demoCriteria: SessionFilterCriteria = {
+      systems: [],
+      disciplines: [],
+      topics: [],
+      pool: 'all',
+      count: 10,
+      mode: 'tutor',
+      contentKind: 'demo',
+    };
+
+    const demoResult = filterQuestionsForSession(mixedBank, history, demoCriteria);
+    expect(demoResult.eligibleQuestions.map((q) => q.id)).toEqual(['q-demo-1', 'q-demo-2']);
+  });
 });

@@ -22,21 +22,30 @@ import {
   flashcardRepo,
   questionReportRepo,
   achievementRepo,
+  discoverCardRepo,
+  saveQuestionToReview,
+  saveDiscoverCardToReview,
   DEFAULT_PROFILE,
   DEFAULT_SETTINGS,
 } from './persistence/indexedDbRepo';
 
 import { buildQuestionHistory, filterQuestionsForSession } from './domain/eligibility';
 import { computeDeadline } from './domain/timer';
-import { finalizeSession } from './domain/scoring';
 import {
-  createReviewQueueItem,
   getDueReviewItems,
-  resolveReviewQuestion,
+  buildDueReviewSessionPlan,
+  recordReviewAttempt,
 } from './domain/spacedReview';
-import { createFlashcard, getDueFlashcards } from './domain/flashcardReview';
+import { createFlashcard, reviewFlashcard } from './domain/flashcardReview';
 import { evaluateAchievements } from './domain/achievements';
 import { generateDailyStudyPlan } from './domain/studyPlan';
+import { buildUnifiedReviewQueue, type UnifiedReviewItem } from './domain/unifiedReview';
+import { getKarachiDayKey, getMsUntilNextKarachiMidnight } from './domain/studyDay';
+import {
+  computeStreakState,
+  canonicalizeQuestionId,
+  canonicalizeReviewItem,
+} from './domain/dailyHabit';
 
 import type {
   Question,
@@ -52,11 +61,91 @@ import type {
   QuestionReport,
   ReportIssueType,
   ErrorCause,
+  ConfidenceLevel,
+  DiscoverCard,
+  SaveToReviewResult,
+  QuestionUserAnswer,
 } from './domain/types';
+
+const VALID_SCREENS: ScreenName[] = [
+  'dashboard',
+  'create-session',
+  'player',
+  'results',
+  'error-notebook',
+  'flashcards',
+  'analytics',
+  'workspace',
+  'settings',
+];
+
+export interface ParsedRoute {
+  screen: ScreenName;
+  sessionId?: string;
+  rawParams: Record<string, string>;
+}
+
+export function parseHashRoute(hash = typeof window !== 'undefined' ? window.location.hash : ''): ParsedRoute {
+  const clean = hash.replace(/^#\/?/, '');
+  const [pathPart, queryPart] = clean.split('?');
+  const pathSegments = pathPart ? pathPart.split('/').filter(Boolean) : [];
+  const rawSegment = pathSegments[0] || 'today';
+
+  let screen: ScreenName = 'dashboard';
+  if (rawSegment === 'today' || rawSegment === 'dashboard') {
+    screen = 'dashboard';
+  } else if (rawSegment === 'practice' || rawSegment === 'create-session') {
+    screen = 'create-session';
+  } else if (rawSegment === 'cards' || rawSegment === 'flashcards') {
+    screen = 'flashcards';
+  } else if (VALID_SCREENS.includes(rawSegment as ScreenName)) {
+    screen = rawSegment as ScreenName;
+  }
+
+  const rawParams: Record<string, string> = {};
+  if (queryPart) {
+    const searchParams = new URLSearchParams(queryPart);
+    searchParams.forEach((val, key) => {
+      rawParams[key] = val;
+    });
+  }
+
+  const sessionId = rawParams.sessionId || (pathSegments.length > 1 ? pathSegments[1] : undefined);
+  return { screen, sessionId, rawParams };
+}
 
 export function App() {
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [currentScreen, setCurrentScreen] = useState<ScreenName>('dashboard');
+  const [currentScreen, setCurrentScreenState] = useState<ScreenName>(() => parseHashRoute().screen);
+  const [resultsNotFound, setResultsNotFound] = useState<boolean>(false);
+  const [storageError, setStorageError] = useState<string | null>(null);
+
+  // Navigate helper syncs window.location.hash with clean destination slugs
+  const navigate = useCallback((target: ScreenName | 'today' | 'practice' | 'cards', params?: { sessionId?: string }) => {
+    let resolved: ScreenName = 'dashboard';
+    let slug = 'today';
+
+    if (target === 'today' || target === 'dashboard') {
+      resolved = 'dashboard';
+      slug = 'today';
+    } else if (target === 'practice' || target === 'create-session') {
+      resolved = 'create-session';
+      slug = 'practice';
+    } else if (target === 'cards' || target === 'flashcards') {
+      resolved = 'flashcards';
+      slug = 'cards';
+    } else {
+      resolved = target as ScreenName;
+      slug = target;
+    }
+
+    let hash = `#/${slug}`;
+    if (params?.sessionId) {
+      hash += `?sessionId=${encodeURIComponent(params.sessionId)}`;
+    }
+    window.location.hash = hash;
+    setCurrentScreenState(resolved);
+  }, []);
 
   // Core domain state
   const [profile, setProfile] = useState<UserProfile>(DEFAULT_PROFILE);
@@ -65,12 +154,15 @@ export function App() {
   const [sessions, setSessions] = useState<StudySession[]>([]);
   const [activeSession, setActiveSession] = useState<StudySession | null>(null);
   const [viewingSession, setViewingSession] = useState<StudySession | null>(null);
-  const [todayActivity, setTodayActivity] = useState<DailyActivityRecord | null>(null);
+  const [activeDayKey, setActiveDayKey] = useState<string>(() => getKarachiDayKey());
+  const [allDailyActivity, setAllDailyActivity] = useState<DailyActivityRecord[]>([]);
+  const [justQualifiedToday, setJustQualifiedToday] = useState<boolean>(false);
 
-  // Phase 2 domain state
+  // Phase 2 & Learning Content domain state
   const [reviewQueue, setReviewQueue] = useState<ReviewQueueItem[]>([]);
   const [errorEntries, setErrorEntries] = useState<ErrorNotebookEntry[]>([]);
   const [flashcards, setFlashcards] = useState<Flashcard[]>([]);
+  const [discoverCards, setDiscoverCards] = useState<DiscoverCard[]>([]);
   const [reports, setReports] = useState<QuestionReport[]>([]);
   const [earnedAchievements, setEarnedAchievements] = useState<Record<string, number>>({});
 
@@ -78,8 +170,62 @@ export function App() {
   const [showOnboarding, setShowOnboarding] = useState<boolean>(false);
   const [createSessionInitialPool, setCreateSessionInitialPool] = useState<QuestionPool>('all');
 
-  // Today's date string YYYY-MM-DD
-  const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  // Sync hash routing on window hashchange (browser back/forward & direct links)
+  useEffect(() => {
+    const handleHashChange = async () => {
+      const { screen, sessionId } = parseHashRoute();
+
+      if (screen === 'player') {
+        if (!activeSession) {
+          const inProgress = await sessionRepo.getActiveSession();
+          if (inProgress) {
+            setActiveSession(inProgress);
+            setCurrentScreenState('player');
+            return;
+          }
+          window.location.hash = '#/dashboard';
+          setCurrentScreenState('dashboard');
+          return;
+        }
+      }
+
+      if (screen === 'results') {
+        if (sessionId) {
+          if (viewingSession && viewingSession.id === sessionId) {
+            setResultsNotFound(false);
+            setCurrentScreenState('results');
+            return;
+          }
+          const found = sessions.find((s) => s.id === sessionId) || (await sessionRepo.getById(sessionId));
+          if (found) {
+            setViewingSession(found);
+            setResultsNotFound(false);
+            setCurrentScreenState('results');
+            return;
+          } else {
+            setViewingSession(null);
+            setResultsNotFound(true);
+            setCurrentScreenState('results');
+            return;
+          }
+        } else if (viewingSession) {
+          setResultsNotFound(false);
+          window.location.hash = `#/results?sessionId=${encodeURIComponent(viewingSession.id)}`;
+          setCurrentScreenState('results');
+          return;
+        } else {
+          window.location.hash = '#/dashboard';
+          setCurrentScreenState('dashboard');
+          return;
+        }
+      }
+
+      setCurrentScreenState(screen);
+    };
+
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, [activeSession, viewingSession, sessions]);
 
   // Compute question history stats from past sessions
   const historyStats = useMemo(() => {
@@ -106,17 +252,19 @@ export function App() {
         loadedFlashcards,
         loadedReports,
         loadedAchievements,
+        loadedDiscoverCards,
       ] = await Promise.all([
         profileRepo.getProfile(),
         settingsRepo.getSettings(),
         questionRepo.getAll(),
         sessionRepo.getAll(),
-        dailyActivityRepo.getActivityForDate(todayStr),
+        dailyActivityRepo.getAll(),
         reviewQueueRepo.getAll(),
         errorNotebookRepo.getAll(),
         flashcardRepo.getAll(),
         questionReportRepo.getAll(),
         achievementRepo.getEarned(),
+        discoverCardRepo.getAll(),
       ]);
 
       if (loadedProfile) {
@@ -136,6 +284,7 @@ export function App() {
       setReviewQueue(loadedReviewQueue);
       setErrorEntries(loadedErrorEntries);
       setFlashcards(loadedFlashcards);
+      setDiscoverCards(loadedDiscoverCards);
       setReports(loadedReports);
       setEarnedAchievements(loadedAchievements);
 
@@ -145,17 +294,85 @@ export function App() {
         .sort((a, b) => b.startedAt - a.startedAt)[0];
       setActiveSession(inProgress || null);
 
-      setTodayActivity(loadedToday);
+      setAllDailyActivity(loadedToday as DailyActivityRecord[]);
+
+      // Reconcile initial route on load / refresh
+      const { screen, sessionId } = parseHashRoute();
+      if (screen === 'results') {
+        if (sessionId) {
+          const found = loadedSessions.find((s) => s.id === sessionId) || (await sessionRepo.getById(sessionId));
+          if (found) {
+            setViewingSession(found);
+            setResultsNotFound(false);
+            setCurrentScreenState('results');
+          } else {
+            setViewingSession(null);
+            setResultsNotFound(true);
+            setCurrentScreenState('results');
+          }
+        } else {
+          window.location.hash = '#/dashboard';
+          setCurrentScreenState('dashboard');
+        }
+      } else if (screen === 'player') {
+        if (inProgress) {
+          setActiveSession(inProgress);
+          setCurrentScreenState('player');
+        } else {
+          window.location.hash = '#/dashboard';
+          setCurrentScreenState('dashboard');
+        }
+      } else {
+        setCurrentScreenState(screen);
+      }
     } catch (err) {
       console.error('Failed to load initial data:', err);
     } finally {
       setIsLoading(false);
     }
-  }, [todayStr]);
+  }, []);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // Update UI when midnight passes in Asia/Karachi and when the app regains focus
+  useEffect(() => {
+    let timerId: ReturnType<typeof setTimeout>;
+
+    const checkAndUpdateDay = () => {
+      const nowDay = getKarachiDayKey();
+      setActiveDayKey((prev) => (prev !== nowDay ? nowDay : prev));
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        checkAndUpdateDay();
+      }
+    };
+
+    const handleFocus = () => {
+      checkAndUpdateDay();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleFocus);
+
+    const scheduleNextMidnight = () => {
+      const msUntilMidnight = getMsUntilNextKarachiMidnight();
+      timerId = setTimeout(() => {
+        checkAndUpdateDay();
+        scheduleNextMidnight();
+      }, msUntilMidnight + 100);
+    };
+    scheduleNextMidnight();
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocus);
+      clearTimeout(timerId);
+    };
+  }, []);
 
   // Apply theme to document
   useEffect(() => {
@@ -167,6 +384,14 @@ export function App() {
     return allQuestions.filter((q) => q.editorialStatus === 'approved');
   }, [allQuestions]);
 
+  const todayActivity = useMemo(() => {
+    return allDailyActivity.find((a) => a.date === activeDayKey) || null;
+  }, [allDailyActivity, activeDayKey]);
+
+  const streakState = useMemo(() => {
+    return computeStreakState(allDailyActivity, activeDayKey);
+  }, [allDailyActivity, activeDayKey]);
+
   const studyPlan = useMemo(() => {
     return generateDailyStudyPlan(
       profile,
@@ -177,6 +402,10 @@ export function App() {
       reviewQueue
     );
   }, [profile, todayActivity, activeSession, approvedQuestions, historyStats, reviewQueue]);
+
+  const dueCardsCount = useMemo(() => {
+    return buildUnifiedReviewQueue(flashcards, reviewQueue, allQuestions, Date.now()).length;
+  }, [flashcards, reviewQueue, allQuestions]);
 
   // Check achievements evaluation
   const checkAchievements = useCallback(
@@ -192,15 +421,45 @@ export function App() {
 
   // Handle saving profile
   const handleSaveProfile = async (updated: UserProfile) => {
-    await profileRepo.saveProfile(updated);
-    setProfile(updated);
-    setShowOnboarding(false);
+    try {
+      await profileRepo.saveProfile(updated);
+      setProfile(updated);
+      setShowOnboarding(false);
+      setStorageError(null);
+    } catch (err) {
+      console.error('Failed to save profile:', err);
+      setStorageError('Storage Notice: Unable to save profile to local browser storage.');
+    }
+  };
+
+  // Handle skipping onboarding (marks completed so user is not prompted on refresh)
+  const handleSkipOnboarding = async () => {
+    try {
+      const skipped: UserProfile = {
+        ...profile,
+        onboardingCompleted: true,
+        updatedAt: Date.now(),
+      };
+      await profileRepo.saveProfile(skipped);
+      setProfile(skipped);
+      setShowOnboarding(false);
+      setStorageError(null);
+    } catch (err) {
+      console.error('Failed to save skipped onboarding state:', err);
+      setShowOnboarding(false);
+    }
   };
 
   // Handle saving settings
   const handleSaveSettings = async (updated: UserSettings) => {
-    await settingsRepo.saveSettings(updated);
-    setSettings(updated);
+    try {
+      await settingsRepo.saveSettings(updated);
+      setSettings(updated);
+      setStorageError(null);
+    } catch (err) {
+      console.error('Failed to save settings:', err);
+      setStorageError('Storage Notice: Unable to save settings to local browser storage.');
+    }
   };
 
   // Toggle Quiet Mode fast button in navbar
@@ -248,10 +507,16 @@ export function App() {
       };
     }
 
-    await sessionRepo.save(newSession);
-    setActiveSession(newSession);
-    setSessions((prev) => [newSession, ...prev]);
-    setCurrentScreen('player');
+    try {
+      await sessionRepo.save(newSession);
+      setActiveSession(newSession);
+      setSessions((prev) => [newSession, ...prev]);
+      setStorageError(null);
+      navigate('player');
+    } catch (err) {
+      console.error('Failed to save new session:', err);
+      setStorageError('Storage Notice: Unable to save new session to local storage.');
+    }
   };
 
   // Launch 5-question quick sprint
@@ -267,24 +532,16 @@ export function App() {
     handleLaunchSession(criteria);
   };
 
-  // Launch due reviews session
+  // Launch due reviews session using deterministic mapping
   const handleStartDueReviewsSession = async () => {
     const dueItems = getDueReviewItems(reviewQueue);
     if (dueItems.length === 0) return;
 
-    // Resolve questions for due review items
-    const questionsToReview: Question[] = [];
-    for (const item of dueItems) {
-      const resolution = resolveReviewQuestion(item, approvedQuestions);
-      if (resolution && !questionsToReview.some((q) => q.id === resolution.question.id)) {
-        questionsToReview.push(resolution.question);
-      }
-    }
-
-    if (questionsToReview.length === 0) return;
+    const plan = buildDueReviewSessionPlan(dueItems, approvedQuestions);
+    if (plan.questions.length === 0) return;
 
     const now = Date.now();
-    const questionSnapshots: Question[] = JSON.parse(JSON.stringify(questionsToReview));
+    const questionSnapshots: Question[] = JSON.parse(JSON.stringify(plan.questions));
 
     const reviewSession: StudySession = {
       id: `session-due-reviews-${now}`,
@@ -297,6 +554,7 @@ export function App() {
       questionSnapshots,
       currentIndex: 0,
       answers: {},
+      reviewMappings: plan.reviewMappings,
     };
 
     for (const q of questionSnapshots) {
@@ -308,10 +566,16 @@ export function App() {
       };
     }
 
-    await sessionRepo.save(reviewSession);
-    setActiveSession(reviewSession);
-    setSessions((prev) => [reviewSession, ...prev]);
-    setCurrentScreen('player');
+    try {
+      await sessionRepo.save(reviewSession);
+      setActiveSession(reviewSession);
+      setSessions((prev) => [reviewSession, ...prev]);
+      setStorageError(null);
+      navigate('player');
+    } catch (err) {
+      console.error('Failed to save review session:', err);
+      setStorageError('Storage Notice: Unable to launch review session.');
+    }
   };
 
   // Resume an existing session
@@ -319,67 +583,91 @@ export function App() {
     const s = sessions.find((item) => item.id === sessionId) || (await sessionRepo.getById(sessionId));
     if (s) {
       setActiveSession(s);
-      setCurrentScreen('player');
+      navigate('player');
     }
   };
 
   // Save session state (autosave from player)
   const handleSaveSessionState = async (updated: StudySession) => {
-    await sessionRepo.save(updated);
-    setActiveSession(updated);
-    setSessions((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+    try {
+      await sessionRepo.save(updated);
+      setActiveSession(updated);
+      setSessions((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+    } catch (err) {
+      console.error('Autosave failed:', err);
+      setStorageError('Storage Notice: Autosave failed. Changes may not be persisted.');
+      throw err;
+    }
   };
 
-  // Finalize/Finish session
+  // Finalize/Finish session using authoritative repository transaction
   const handleFinishSession = async (sessionToFinish: StudySession) => {
-    const finalized = finalizeSession(sessionToFinish);
-    await sessionRepo.save(finalized);
+    try {
+      const now = Date.now();
+      const currentDay = getKarachiDayKey(now);
+      const result = await sessionRepo.finalizeSessionTransaction(sessionToFinish, currentDay, now);
 
-    // Compute questions delta and update daily local activity
-    const answeredCount = finalized.score?.correctCount !== undefined
-      ? (finalized.score.correctCount + finalized.score.incorrectCount)
-      : 0;
-    const correctCount = finalized.score?.correctCount || 0;
-
-    const updatedActivity = await dailyActivityRepo.recordActivity(
-      todayStr,
-      answeredCount,
-      correctCount,
-      true
-    );
-
-    // Automatic entry into Review Queue for incorrect or guessed/unsure answers
-    const newReviewItems: ReviewQueueItem[] = [];
-    const now = Date.now();
-
-    for (const q of finalized.questionSnapshots) {
-      const ans = finalized.answers[q.id];
-      if (!ans) continue;
-      const chosen = ans.firstSubmittedOptionId ?? ans.selectedOptionId;
-      if (!chosen) continue;
-
-      const isCorrect = chosen === q.correctOptionId;
-      if (!isCorrect) {
-        newReviewItems.push(createReviewQueueItem(q.id, q.conceptId, 'incorrect', now));
-      } else if (ans.confidence === 'guessed' || ans.confidence === 'unsure') {
-        newReviewItems.push(createReviewQueueItem(q.id, q.conceptId, ans.confidence, now));
+      const updatedSessions = [result.session, ...sessions.filter((s) => s.id !== result.session.id)];
+      if (result.updatedActivity) {
+        setAllDailyActivity((prev) => {
+          const idx = prev.findIndex((a) => a.date === result.updatedActivity!.date);
+          if (idx >= 0) {
+            return prev.map((a, i) => (i === idx ? result.updatedActivity! : a));
+          }
+          return [...prev, result.updatedActivity!];
+        });
       }
+      if (result.justQualified) {
+        setJustQualifiedToday(true);
+      }
+      if (result.updatedReviewItems && result.updatedReviewItems.length > 0) {
+        const updatedMap = new Map(result.updatedReviewItems.map((item) => [item.id, item]));
+        setReviewQueue((prev) => prev.map((item) => updatedMap.get(item.id) || item));
+      }
+      if (result.newReviewItems && result.newReviewItems.length > 0) {
+        setReviewQueue((prev) => [...prev, ...result.newReviewItems!]);
+      }
+
+      setActiveSession(null);
+      setViewingSession(result.session);
+      setResultsNotFound(false);
+      setSessions(updatedSessions);
+      setStorageError(null);
+      navigate('results', { sessionId: result.session.id });
+
+      // Check achievements from persisted records
+      await checkAchievements(updatedSessions, errorEntries, flashcards);
+    } catch (err: any) {
+      console.error('Failed to finish session:', err);
+      setStorageError('Storage Notice: Unable to finalize session to local storage.');
+      throw err; // Re-throw so caller (QuestionPlayerView) receives typed failure and resets lock!
     }
+  };
 
-    if (newReviewItems.length > 0) {
-      await reviewQueueRepo.saveBatch(newReviewItems);
-      setReviewQueue((prev) => [...prev, ...newReviewItems]);
+  // Record tutor mode answer submission as a qualifying habit action
+  const handleRecordTutorAnswer = async (questionId: string) => {
+    try {
+      const now = Date.now();
+      const currentDay = getKarachiDayKey(now);
+      const res = await dailyActivityRepo.recordQualifyingAction(
+        currentDay,
+        canonicalizeQuestionId(questionId),
+        { questionsAnswered: 1 },
+        now
+      );
+      setAllDailyActivity((prev) => {
+        const idx = prev.findIndex((a) => a.date === res.record.date);
+        if (idx >= 0) {
+          return prev.map((a, i) => (i === idx ? res.record : a));
+        }
+        return [...prev, res.record];
+      });
+      if (res.justQualified) {
+        setJustQualifiedToday(true);
+      }
+    } catch (err) {
+      console.warn('Could not record qualifying tutor action:', err);
     }
-
-    const updatedSessions = [finalized, ...sessions.filter((s) => s.id !== finalized.id)];
-    setTodayActivity(updatedActivity);
-    setActiveSession(null);
-    setViewingSession(finalized);
-    setSessions(updatedSessions);
-    setCurrentScreen('results');
-
-    // Check achievements
-    await checkAchievements(updatedSessions, errorEntries, flashcards);
   };
 
   // View results of an already completed session
@@ -387,8 +675,9 @@ export function App() {
     const s = sessions.find((item) => item.id === sessionId);
     if (s) {
       setViewingSession(s);
-      setCurrentScreen('results');
+      setResultsNotFound(false);
     }
+    navigate('results', { sessionId });
   };
 
   // Start a targeted review session with specific question IDs (from results screen)
@@ -421,23 +710,78 @@ export function App() {
       };
     }
 
-    await sessionRepo.save(reviewSession);
-    setActiveSession(reviewSession);
-    setSessions((prev) => [reviewSession, ...prev]);
-    setCurrentScreen('player');
+    try {
+      await sessionRepo.save(reviewSession);
+      setActiveSession(reviewSession);
+      setSessions((prev) => [reviewSession, ...prev]);
+      setStorageError(null);
+      navigate('player');
+    } catch (err) {
+      console.error('Failed to save review session:', err);
+      setStorageError('Storage Notice: Unable to launch review session.');
+    }
+  };
+
+  // Start a review session from an exact question snapshot (from Error Notebook)
+  const handleStartReviewFromSnapshot = async (snapshot: Question) => {
+    const now = Date.now();
+    const clonedSnapshot: Question = JSON.parse(JSON.stringify(snapshot));
+
+    const reviewSession: StudySession = {
+      id: `session-review-${now}`,
+      name: `Error Review: ${clonedSnapshot.topic || clonedSnapshot.id} (v${clonedSnapshot.version})`,
+      mode: 'tutor',
+      status: 'in-progress',
+      createdAt: now,
+      startedAt: now,
+      durationMinutes: 10,
+      questionSnapshots: [clonedSnapshot],
+      currentIndex: 0,
+      answers: {
+        [clonedSnapshot.id]: {
+          selectedOptionId: null,
+          isFlagged: false,
+          eliminatedOptionIds: [],
+          timeSpentSeconds: 0,
+        },
+      },
+    };
+
+    try {
+      await sessionRepo.save(reviewSession);
+      setActiveSession(reviewSession);
+      setSessions((prev) => [reviewSession, ...prev]);
+      setStorageError(null);
+      navigate('player');
+    } catch (err) {
+      console.error('Failed to save snapshot review session:', err);
+      setStorageError('Storage Notice: Unable to launch review session.');
+    }
   };
 
   // Error Notebook Handlers
   const handleSaveErrorEntry = async (entry: ErrorNotebookEntry) => {
-    await errorNotebookRepo.save(entry);
-    const updated = [entry, ...errorEntries.filter((e) => e.id !== entry.id)];
-    setErrorEntries(updated);
-    await checkAchievements(sessions, updated, flashcards);
+    try {
+      await errorNotebookRepo.save(entry);
+      const updated = [entry, ...errorEntries.filter((e) => e.id !== entry.id)];
+      setErrorEntries(updated);
+      setStorageError(null);
+      await checkAchievements(sessions, updated, flashcards);
+    } catch (err) {
+      console.error('Failed to save error notebook entry:', err);
+      setStorageError('Storage Notice: Unable to save error notebook entry.');
+    }
   };
 
   const handleDeleteErrorEntry = async (id: string) => {
-    await errorNotebookRepo.delete(id);
-    setErrorEntries((prev) => prev.filter((e) => e.id !== id));
+    try {
+      await errorNotebookRepo.delete(id);
+      setErrorEntries((prev) => prev.filter((e) => e.id !== id));
+      setStorageError(null);
+    } catch (err) {
+      console.error('Failed to delete error notebook entry:', err);
+      setStorageError('Storage Notice: Unable to delete error notebook entry.');
+    }
   };
 
   const handleCreateErrorEntryFromPlayer = async (
@@ -464,20 +808,219 @@ export function App() {
 
   // Flashcards Handlers
   const handleSaveFlashcard = async (card: Flashcard) => {
-    await flashcardRepo.save(card);
-    const updated = [card, ...flashcards.filter((c) => c.id !== card.id)];
-    setFlashcards(updated);
-    await checkAchievements(sessions, errorEntries, updated);
+    try {
+      await flashcardRepo.save(card);
+      const updated = [card, ...flashcards.filter((c) => c.id !== card.id)];
+      setFlashcards(updated);
+      setStorageError(null);
+      await checkAchievements(sessions, errorEntries, updated);
+    } catch (err) {
+      console.error('Failed to save flashcard:', err);
+      setStorageError('Storage Notice: Unable to save flashcard to local storage.');
+      throw err;
+    }
   };
 
   const handleDeleteFlashcard = async (id: string) => {
-    await flashcardRepo.delete(id);
-    setFlashcards((prev) => prev.filter((c) => c.id !== id));
+    try {
+      await flashcardRepo.delete(id);
+      setFlashcards((prev) => prev.filter((c) => c.id !== id));
+      setStorageError(null);
+    } catch (err) {
+      console.error('Failed to delete flashcard:', err);
+      setStorageError('Storage Notice: Unable to delete flashcard.');
+    }
   };
 
   const handleCreateFlashcardFromEntry = async (front: string, back: string, topic: string) => {
     const card = createFlashcard(front, back, 'personal', { topic });
     await handleSaveFlashcard(card);
+  };
+
+  // Manual save question to review queue (idempotent, returns honest status)
+  const handleSaveQuestionToReview = async (
+    question: Question,
+    answer?: QuestionUserAnswer
+  ): Promise<SaveToReviewResult> => {
+    try {
+      const res = await saveQuestionToReview(question, answer);
+      if (res.card) {
+        setFlashcards((prev) => [...prev.filter((f) => f.id !== res.card!.id), res.card!]);
+        const updatedRq = await reviewQueueRepo.getAll();
+        setReviewQueue(updatedRq);
+      }
+      return res;
+    } catch (err) {
+      console.error('Failed to save question to review:', err);
+      return {
+        status: 'error',
+        message: 'Storage notice: Could not save item to review queue.',
+      };
+    }
+  };
+
+  // Manual save Discover card to review queue (idempotent, returns honest status)
+  const handleSaveDiscoverCardToReview = async (
+    card: DiscoverCard
+  ): Promise<SaveToReviewResult> => {
+    try {
+      const res = await saveDiscoverCardToReview(card);
+      if (res.card) {
+        setFlashcards((prev) => [...prev.filter((f) => f.id !== res.card!.id), res.card!]);
+      }
+      return res;
+    } catch (err) {
+      console.error('Failed to save discover card to review:', err);
+      return {
+        status: 'error',
+        message: 'Storage notice: Could not save Discover concept to review queue.',
+      };
+    }
+  };
+
+  // Unified review rating handler (again / hard / remembered)
+  // Preserves distinct scheduling semantics: updates card SRS and/or reviewQueue records
+  const handleRateReviewItem = async (
+    item: UnifiedReviewItem,
+    rating: 'again' | 'hard' | 'remembered'
+  ) => {
+    const now = Date.now();
+
+    // 1. Update backing flashcard if present
+    if (item.flashcardId) {
+      const card = flashcards.find((f) => f.id === item.flashcardId);
+      if (card) {
+        const ratingMap: Record<string, 'again' | 'difficult' | 'remembered'> = {
+          again: 'again',
+          hard: 'difficult',
+          remembered: 'remembered',
+        };
+        const updatedCard = reviewFlashcard(card, ratingMap[rating], now);
+        await flashcardRepo.save(updatedCard);
+        setFlashcards((prev) => prev.map((f) => (f.id === updatedCard.id ? updatedCard : f)));
+      }
+    }
+
+    // 2. Update backing reviewQueueItem if present
+    if (item.reviewQueueItemId) {
+      const queueItem = reviewQueue.find((rq) => rq.id === item.reviewQueueItemId);
+      if (queueItem) {
+        const isCorrect = rating !== 'again';
+        const confidence: ConfidenceLevel = rating === 'hard' ? 'unsure' : 'confident';
+        const updatedQueueItem = recordReviewAttempt(queueItem, isCorrect, confidence, now);
+        await reviewQueueRepo.save(updatedQueueItem);
+        setReviewQueue((prev) =>
+          prev.map((rq) => (rq.id === updatedQueueItem.id ? updatedQueueItem : rq))
+        );
+      }
+    }
+
+    // 3. Record daily review credit together with schedule changes
+    try {
+      const currentDay = getKarachiDayKey(now);
+      const canonicalId = canonicalizeReviewItem({
+        id: item.id,
+        sourceQuestionId: item.sourceQuestionId,
+        sourceDiscoverCardId: item.sourceDiscoverCardId,
+        flashcardId: item.flashcardId,
+      });
+
+      const res = await dailyActivityRepo.recordQualifyingAction(
+        currentDay,
+        canonicalId,
+        { flashcardsReviewed: 1 },
+        now
+      );
+      setAllDailyActivity((prev) => {
+        const idx = prev.findIndex((a) => a.date === res.record.date);
+        if (idx >= 0) {
+          return prev.map((a, i) => (i === idx ? res.record : a));
+        }
+        return [...prev, res.record];
+      });
+      if (res.justQualified) {
+        setJustQualifiedToday(true);
+      }
+    } catch (err) {
+      console.warn('Could not record review activity credit:', err);
+    }
+  };
+
+  // Retry question handler launched from Cards review item
+  // Preserves question review scheduler and attaches review mapping
+  const handleRetryQuestion = async (questionId: string) => {
+    const targetQuestion = allQuestions.find((q) => q.id === questionId);
+    if (!targetQuestion) return;
+
+    const now = Date.now();
+    const questionSnapshots = [JSON.parse(JSON.stringify(targetQuestion))];
+    const matchingQueueItems = reviewQueue.filter(
+      (rq) => rq.questionId === questionId && rq.status === 'pending'
+    );
+
+    const retrySession: StudySession = {
+      id: `session-retry-${questionId}-${now}`,
+      name: `Retry: ${targetQuestion.topic}`,
+      mode: 'tutor',
+      status: 'in-progress',
+      createdAt: now,
+      startedAt: now,
+      durationMinutes: 5,
+      questionSnapshots,
+      currentIndex: 0,
+      answers: {
+        [questionId]: {
+          selectedOptionId: null,
+          isFlagged: false,
+          eliminatedOptionIds: [],
+          timeSpentSeconds: 0,
+        },
+      },
+      reviewMappings: matchingQueueItems.length > 0
+        ? {
+            [questionId]: {
+              questionId,
+              originatingItemIds: matchingQueueItems.map((item) => item.id),
+              originalQuestionIds: [questionId],
+              wasAlternate: false,
+            },
+          }
+        : undefined,
+    };
+
+    try {
+      await sessionRepo.save(retrySession);
+      setActiveSession(retrySession);
+      setSessions((prev) => [retrySession, ...prev]);
+      setStorageError(null);
+      navigate('player');
+    } catch (err) {
+      console.error('Failed to launch retry session:', err);
+      setStorageError('Storage Notice: Unable to launch retry session.');
+    }
+  };
+
+  // Discover Card CRUD for Content Workspace
+  const handleSaveDiscoverCard = async (card: DiscoverCard) => {
+    try {
+      await discoverCardRepo.save(card);
+      setDiscoverCards((prev) => [card, ...prev.filter((c) => c.id !== card.id)]);
+      setStorageError(null);
+    } catch (err) {
+      console.error('Failed to save discover card:', err);
+      setStorageError('Storage Notice: Unable to save Discover card to local bank.');
+    }
+  };
+
+  const handleDeleteDiscoverCard = async (id: string) => {
+    try {
+      await discoverCardRepo.delete(id);
+      setDiscoverCards((prev) => prev.filter((c) => c.id !== id));
+      setStorageError(null);
+    } catch (err) {
+      console.error('Failed to delete discover card:', err);
+      setStorageError('Storage Notice: Unable to delete Discover card.');
+    }
   };
 
   // Question Reports Handler
@@ -487,44 +1030,68 @@ export function App() {
     issueType: ReportIssueType;
     comment: string;
   }) => {
-    const now = Date.now();
-    const rep: QuestionReport = {
-      id: `rep-${now}-${Math.random().toString(36).slice(2, 6)}`,
-      questionId: reportData.questionId,
-      questionVersion: reportData.questionVersion,
-      issueType: reportData.issueType,
-      comment: reportData.comment,
-      createdAt: now,
-      resolved: false,
-    };
-    await questionReportRepo.save(rep);
-    setReports((prev) => [rep, ...prev]);
+    try {
+      const now = Date.now();
+      const rep: QuestionReport = {
+        id: `rep-${now}-${Math.random().toString(36).slice(2, 6)}`,
+        questionId: reportData.questionId,
+        questionVersion: reportData.questionVersion,
+        issueType: reportData.issueType,
+        comment: reportData.comment,
+        createdAt: now,
+        resolved: false,
+      };
+      await questionReportRepo.save(rep);
+      setReports((prev) => [rep, ...prev]);
+      setStorageError(null);
+    } catch (err) {
+      console.error('Failed to save report:', err);
+      setStorageError('Storage Notice: Unable to save question report.');
+    }
   };
 
   const handleResolveReport = async (reportId: string, note?: string) => {
-    await questionReportRepo.markResolved(reportId, note);
-    setReports((prev) =>
-      prev.map((r) =>
-        r.id === reportId ? { ...r, resolved: true, resolvedAt: Date.now(), resolutionNote: note } : r
-      )
-    );
+    try {
+      await questionReportRepo.markResolved(reportId, note);
+      setReports((prev) =>
+        prev.map((r) =>
+          r.id === reportId ? { ...r, resolved: true, resolvedAt: Date.now(), resolutionNote: note } : r
+        )
+      );
+      setStorageError(null);
+    } catch (err) {
+      console.error('Failed to resolve report:', err);
+      setStorageError('Storage Notice: Unable to update report status.');
+    }
   };
 
   // Content Workspace Handlers
   const handleSaveQuestion = async (q: Question) => {
-    await questionRepo.save(q);
-    setAllQuestions((prev) => [q, ...prev.filter((item) => item.id !== q.id)]);
+    try {
+      await questionRepo.save(q);
+      setAllQuestions((prev) => [q, ...prev.filter((item) => item.id !== q.id)]);
+      setStorageError(null);
+    } catch (err) {
+      console.error('Failed to save question:', err);
+      setStorageError('Storage Notice: Unable to save question to local bank.');
+    }
   };
 
   const handleDeleteQuestion = async (id: string) => {
-    await questionRepo.delete(id);
-    setAllQuestions((prev) => prev.filter((q) => q.id !== id));
+    try {
+      await questionRepo.delete(id);
+      setAllQuestions((prev) => prev.filter((q) => q.id !== id));
+      setStorageError(null);
+    } catch (err) {
+      console.error('Failed to delete question:', err);
+      setStorageError('Storage Notice: Unable to delete question.');
+    }
   };
 
   // Start new session shortcut from dashboard
   const handleStartFromDashboard = (pool: QuestionPool = 'all') => {
     setCreateSessionInitialPool(pool);
-    setCurrentScreen('create-session');
+    navigate('create-session');
   };
 
   if (isLoading) {
@@ -549,24 +1116,54 @@ export function App() {
     );
   }
 
-  const dueCardsCount = getDueFlashcards(flashcards).length;
-
   return (
     <div className={`wardwit-app ${settings.quietMode ? 'quiet-mode' : ''}`}>
       {/* Top Navigation */}
       <Navbar
         currentScreen={currentScreen}
-        onNavigate={setCurrentScreen}
+        onNavigate={navigate}
         hasActiveSession={Boolean(activeSession)}
         onResumeSession={() => activeSession && handleResumeSession(activeSession.id)}
         settings={settings}
         dueFlashcardsCount={dueCardsCount}
         dueReviewsCount={studyPlan.dueReviewsCount}
+        currentStreak={streakState.currentStreak}
+        streakTooltip={`${streakState.currentStreak}d streak • ${streakState.todayCount}/5 actions today`}
         onToggleQuietMode={handleToggleQuietMode}
       />
 
       {/* Main Body View */}
       <main id="main-content">
+        {/* Global Storage Error Alert */}
+        {storageError && (
+          <div
+            role="alert"
+            className="container"
+            style={{
+              marginTop: '16px',
+              backgroundColor: 'var(--coral-light)',
+              border: '2px solid var(--coral)',
+              borderRadius: 'var(--radius-md)',
+              padding: '12px 18px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+              color: 'var(--coral)',
+              fontWeight: 600,
+            }}
+          >
+            <span>{storageError}</span>
+            <button
+              onClick={() => setStorageError(null)}
+              className="btn btn-sm btn-secondary"
+              style={{ minHeight: '32px', padding: '2px 10px' }}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {currentScreen === 'dashboard' && (
           <DashboardView
             profile={profile}
@@ -580,14 +1177,17 @@ export function App() {
             isPlannedStudyDay={studyPlan.isPlannedStudyDay}
             earnedAchievements={earnedAchievements}
             totalApprovedQuestionsCount={approvedQuestions.length}
+            streakState={streakState}
+            justQualified={justQualifiedToday}
+            onClearJustQualified={() => setJustQualifiedToday(false)}
             onStartNewSession={handleStartFromDashboard}
             onStartQuickSprint={handleStartQuickSprint}
             onStartDueReviewsSession={handleStartDueReviewsSession}
-            onOpenFlashcards={() => setCurrentScreen('flashcards')}
-            onOpenErrorNotebook={() => setCurrentScreen('error-notebook')}
+            onOpenFlashcards={() => navigate('flashcards')}
+            onOpenErrorNotebook={() => navigate('error-notebook')}
             onResumeSession={handleResumeSession}
             onViewResults={handleViewResults}
-            onOpenSettings={() => setCurrentScreen('settings')}
+            onOpenSettings={() => navigate('settings')}
           />
         )}
 
@@ -598,7 +1198,7 @@ export function App() {
             settings={settings}
             initialPool={createSessionInitialPool}
             onLaunchSession={handleLaunchSession}
-            onCancel={() => setCurrentScreen('dashboard')}
+            onCancel={() => navigate('dashboard')}
           />
         )}
 
@@ -608,19 +1208,40 @@ export function App() {
             settings={settings}
             onSaveSession={handleSaveSessionState}
             onFinishSession={handleFinishSession}
-            onExitToDashboard={() => setCurrentScreen('dashboard')}
+            onExitToDashboard={() => navigate('dashboard')}
             onReportQuestion={handleReportQuestion}
             onAddToErrorNotebook={handleCreateErrorEntryFromPlayer}
+            onSaveQuestionToReview={handleSaveQuestionToReview}
+            onRecordTutorAnswer={handleRecordTutorAnswer}
           />
         )}
 
-        {currentScreen === 'results' && viewingSession && (
-          <ResultsView
-            session={viewingSession}
-            settings={settings}
-            onStartReviewSession={handleStartReviewSession}
-            onReturnToDashboard={() => setCurrentScreen('dashboard')}
-          />
+        {currentScreen === 'results' && (
+          viewingSession && !resultsNotFound ? (
+            <ResultsView
+              session={viewingSession}
+              settings={settings}
+              onStartReviewSession={handleStartReviewSession}
+              onReturnToDashboard={() => navigate('dashboard')}
+              onSaveQuestionToReview={handleSaveQuestionToReview}
+            />
+          ) : (
+            <div className="container" style={{ padding: '60px 20px', textAlign: 'center' }}>
+              <div className="card-notebook" style={{ maxWidth: '480px', margin: '0 auto', padding: '32px' }}>
+                <h2 style={{ marginBottom: '12px', color: 'var(--coral)' }}>Session Results Not Found</h2>
+                <p style={{ color: 'var(--text-muted)', marginBottom: '24px' }}>
+                  The requested study session results could not be located in local storage or may have been deleted.
+                </p>
+                <button
+                  onClick={() => navigate('dashboard')}
+                  className="btn btn-primary"
+                  id="return-to-dashboard-btn"
+                >
+                  Return to Dashboard
+                </button>
+              </div>
+            </div>
+          )
         )}
 
         {currentScreen === 'error-notebook' && (
@@ -630,16 +1251,22 @@ export function App() {
             onSaveEntry={handleSaveErrorEntry}
             onDeleteEntry={handleDeleteErrorEntry}
             onCreateFlashcardFromEntry={handleCreateFlashcardFromEntry}
-            onJumpToQuestionReview={(entry) => handleStartReviewSession([entry.questionId])}
+            onJumpToQuestionReview={(entry) => handleStartReviewFromSnapshot(entry.questionSnapshot)}
           />
         )}
 
         {currentScreen === 'flashcards' && (
           <FlashcardsView
             flashcards={flashcards}
+            reviewQueue={reviewQueue}
+            discoverCards={discoverCards}
+            questions={allQuestions}
             settings={settings}
             onSaveCard={handleSaveFlashcard}
             onDeleteCard={handleDeleteFlashcard}
+            onRateReviewItem={handleRateReviewItem}
+            onRetryQuestion={handleRetryQuestion}
+            onSaveDiscoverCardToReview={handleSaveDiscoverCardToReview}
           />
         )}
 
@@ -655,8 +1282,11 @@ export function App() {
             questions={allQuestions}
             reports={reports}
             settings={settings}
+            discoverCards={discoverCards}
             onSaveQuestion={handleSaveQuestion}
             onDeleteQuestion={handleDeleteQuestion}
+            onSaveDiscoverCard={handleSaveDiscoverCard}
+            onDeleteDiscoverCard={handleDeleteDiscoverCard}
             onResolveReport={handleResolveReport}
             onReloadBank={loadData}
           />
@@ -678,7 +1308,7 @@ export function App() {
         initialProfile={profile}
         isOpen={showOnboarding}
         onComplete={handleSaveProfile}
-        onSkip={() => setShowOnboarding(false)}
+        onSkip={handleSkipOnboarding}
         quietMode={settings.quietMode}
       />
     </div>

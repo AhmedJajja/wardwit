@@ -67,8 +67,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [showResetModal, setShowResetModal] = useState<boolean>(false);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   const toggleDay = (day: string) => {
+    setValidationError(null);
     if (selectedDays.includes(day)) {
       setSelectedDays(selectedDays.filter((d) => d !== day));
     } else {
@@ -78,6 +80,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const handleSaveAll = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (selectedDays.length === 0) {
+      setValidationError('Please select at least one study day per week to maintain a daily schedule.');
+      return;
+    }
+    setValidationError(null);
     setIsSaving(true);
     setSaveSuccess(false);
 
@@ -345,6 +352,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     );
                   })}
                 </div>
+                {validationError && (
+                  <div style={{ color: 'var(--coral)', fontSize: '0.82rem', marginTop: '6px', fontWeight: 600 }}>
+                    {validationError}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -424,7 +436,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
 
         {/* Save Settings CTA */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '12px', flexWrap: 'wrap' }}>
+          {validationError && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--coral)', fontWeight: 600, fontSize: '0.9rem' }}>
+              <AlertTriangle size={18} />
+              <span>{validationError}</span>
+            </div>
+          )}
           {saveSuccess && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--mint)', fontWeight: 600, fontSize: '0.9rem' }}>
               <CheckCircle size={18} />

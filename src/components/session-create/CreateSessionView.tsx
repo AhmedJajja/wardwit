@@ -1,9 +1,18 @@
 import React, { useState, useMemo } from 'react';
 import { DisclaimerBanner } from '../common/DisclaimerBanner';
-import { ClipMascot } from '../mascot/ClipMascot';
+import { TytoMascot } from '../mascot/TytoMascot';
 import { filterQuestionsForSession, type QuestionHistoryStats } from '../../domain/eligibility';
 import type { Question, SessionFilterCriteria, SessionMode, QuestionPool, UserSettings } from '../../domain/types';
-import { Filter, Layers, Clock, BookOpen, AlertCircle, Play, Check } from 'lucide-react';
+import {
+  Clock,
+  BookOpen,
+  Play,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  SlidersHorizontal,
+} from 'lucide-react';
+import { BRAND } from '../../config/brand.config';
 
 interface CreateSessionViewProps {
   allQuestions: Question[];
@@ -31,13 +40,23 @@ export const CreateSessionView: React.FC<CreateSessionViewProps> = ({
     return Array.from(new Set(allQuestions.map((q) => q.discipline))).sort();
   }, [allQuestions]);
 
-  // Form state
+  // Form state — simple defaults
+  const [mode, setMode] = useState<SessionMode>('tutor');
+  const [questionCount, setQuestionCount] = useState<number>(5);
+  const [selectedContentKind, setSelectedContentKind] = useState<'all' | 'educational' | 'demo'>('all');
+
+  // Advanced filters — collapsed by default
+  const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
   const [selectedPool, setSelectedPool] = useState<QuestionPool>(initialPool);
   const [selectedSystems, setSelectedSystems] = useState<string[]>([]);
   const [selectedDisciplines, setSelectedDisciplines] = useState<string[]>([]);
-  const [questionCount, setQuestionCount] = useState<number>(5);
-  const [mode, setMode] = useState<SessionMode>('tutor');
   const [durationMinutes, setDurationMinutes] = useState<number>(10);
+
+  // Select microcopy once on mount
+  const tytoQuote = useMemo(() => {
+    const quotes = BRAND.humorQuotes.focus;
+    return quotes[Math.floor(Math.random() * quotes.length)];
+  }, []);
 
   // Compute live match count based on chosen filters
   const criteria: SessionFilterCriteria = useMemo(() => {
@@ -49,28 +68,34 @@ export const CreateSessionView: React.FC<CreateSessionViewProps> = ({
       count: questionCount,
       mode,
       durationMinutes: mode === 'timed' ? durationMinutes : undefined,
+      contentKind: selectedContentKind,
     };
-  }, [selectedSystems, selectedDisciplines, selectedPool, questionCount, mode, durationMinutes]);
+  }, [selectedSystems, selectedDisciplines, selectedPool, questionCount, mode, durationMinutes, selectedContentKind]);
 
   const eligibility = useMemo(() => {
     return filterQuestionsForSession(allQuestions, historyStats, criteria);
   }, [allQuestions, historyStats, criteria]);
 
-  // Toggle taxonomy helper
+  // Count active advanced filters
+  const activeAdvancedCount = useMemo(() => {
+    let count = 0;
+    if (selectedPool !== 'all') count++;
+    if (selectedSystems.length > 0) count += selectedSystems.length;
+    if (selectedDisciplines.length > 0) count += selectedDisciplines.length;
+    if (mode === 'timed' && durationMinutes !== 10) count++;
+    return count;
+  }, [selectedPool, selectedSystems, selectedDisciplines, mode, durationMinutes]);
+
   const toggleSystem = (sys: string) => {
-    if (selectedSystems.includes(sys)) {
-      setSelectedSystems(selectedSystems.filter((s) => s !== sys));
-    } else {
-      setSelectedSystems([...selectedSystems, sys]);
-    }
+    setSelectedSystems((prev) =>
+      prev.includes(sys) ? prev.filter((s) => s !== sys) : [...prev, sys]
+    );
   };
 
   const toggleDiscipline = (disc: string) => {
-    if (selectedDisciplines.includes(disc)) {
-      setSelectedDisciplines(selectedDisciplines.filter((d) => d !== disc));
-    } else {
-      setSelectedDisciplines([...selectedDisciplines, disc]);
-    }
+    setSelectedDisciplines((prev) =>
+      prev.includes(disc) ? prev.filter((d) => d !== disc) : [...prev, disc]
+    );
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -80,326 +105,327 @@ export const CreateSessionView: React.FC<CreateSessionViewProps> = ({
   };
 
   return (
-    <div className="container" style={{ paddingBottom: '48px', paddingTop: '20px' }}>
+    <div className="container" style={{ paddingBottom: '60px', paddingTop: '20px' }}>
       <DisclaimerBanner className="mb-4" />
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', marginTop: '16px', marginBottom: '20px' }}>
+      {/* Header with Tyto */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '20px',
+          marginBottom: '24px',
+          flexWrap: 'wrap',
+        }}
+      >
         <div>
-          <span className="badge badge-teal" style={{ marginBottom: '4px' }}>Session Configurator</span>
-          <h1 style={{ fontSize: '1.8rem' }}>Create Practice Session</h1>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-            Configure question pool, dummy systems, and block duration. Questions are drawn honestly without repetition.
+          <span className="badge badge-teal" style={{ marginBottom: '6px' }}>
+            Custom Practice Block
+          </span>
+          <h1 style={{ fontSize: '1.9rem', letterSpacing: '-0.02em', color: 'var(--text-ink)' }}>
+            Practice Mode
+          </h1>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem', maxWidth: '520px' }}>
+            Configure your question sprint. Simple defaults with optional taxonomy and pool filters.
           </p>
         </div>
 
-        <ClipMascot
-          pose="focus"
-          size={95}
-          speechBubble={settings.quietMode ? undefined : 'Precision practice. Select your question parameters!'}
+        <TytoMascot
+          state="thinking"
+          size={105}
+          speechBubble={tytoQuote}
+          speechPosition="left"
           quietMode={settings.quietMode}
         />
       </div>
 
-      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '22px' }}>
-        {/* 1. Question Pool Selection */}
-        <div className="card-notebook" style={{ padding: '22px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
-            <Layers size={20} style={{ color: 'var(--primary-teal)' }} />
-            <h2 style={{ fontSize: '1.15rem' }}>1. Question Pool Status</h2>
+      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        {/* 1. PRIMARY CONFIGURATION: Mode & Count */}
+        <div className="card-notebook" style={{ padding: '24px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '20px' }}>
+            {/* Mode Selector */}
+            <div>
+              <label style={{ display: 'block', fontWeight: 700, fontSize: '0.92rem', marginBottom: '8px', color: 'var(--text-ink)' }}>
+                Study Mode
+              </label>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  type="button"
+                  onClick={() => setMode('tutor')}
+                  className={`btn btn-sm ${mode === 'tutor' ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ flex: 1, padding: '12px 14px', minHeight: '48px', justifyContent: 'center' }}
+                  id="practice-mode-tutor-btn"
+                >
+                  <BookOpen size={16} />
+                  <span>Tutor Mode</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setMode('timed')}
+                  className={`btn btn-sm ${mode === 'timed' ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ flex: 1, padding: '12px 14px', minHeight: '48px', justifyContent: 'center' }}
+                  id="practice-mode-timed-btn"
+                >
+                  <Clock size={16} />
+                  <span>Timed Exam</span>
+                </button>
+              </div>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '6px' }}>
+                {mode === 'tutor'
+                  ? 'Immediate explanations and rationale after each question.'
+                  : 'Strict countdown clock. Score and feedback presented after finishing the block.'}
+              </div>
+            </div>
+
+            {/* Question Count Presets */}
+            <div>
+              <label style={{ display: 'block', fontWeight: 700, fontSize: '0.92rem', marginBottom: '8px', color: 'var(--text-ink)' }}>
+                Number of Questions
+              </label>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {[5, 10, 15, 20].map((num) => (
+                  <button
+                    key={num}
+                    type="button"
+                    onClick={() => setQuestionCount(num)}
+                    className={`btn btn-sm ${questionCount === num ? 'btn-primary' : 'btn-secondary'}`}
+                    style={{ flex: 1, minHeight: '48px', fontWeight: 700 }}
+                    id={`practice-count-${num}-btn`}
+                  >
+                    {num} Qs
+                  </button>
+                ))}
+              </div>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '6px' }}>
+                Quick 5-10 question blocks are recommended for focused recall.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* 2. CONTENT BANK SEPARATION */}
+        <div className="card-notebook" style={{ padding: '24px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+            <label style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-ink)' }}>
+              Content Bank Source
+            </label>
+            <span className="badge badge-teal">{selectedContentKind === 'all' ? 'All Items' : selectedContentKind}</span>
           </div>
 
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-              gap: '12px',
-            }}
-          >
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px' }}>
             {[
-              { id: 'all', title: 'All Questions', desc: `${allQuestions.length} total demo bank` },
               {
-                id: 'unused',
-                title: 'Unused Questions',
-                desc: `${allQuestions.length - historyStats.answeredQuestionIds.size} untouched`,
+                id: 'all',
+                title: 'All Approved Questions',
+                count: allQuestions.length,
+                desc: 'Combined pool of educational and demo items',
               },
               {
-                id: 'incorrect',
-                title: 'Incorrect Questions',
-                desc: `${historyStats.incorrectQuestionIds.size} need review`,
+                id: 'educational',
+                title: 'Educational Bank',
+                count: allQuestions.filter((q) => q.contentKind === 'educational').length,
+                desc: 'Peer-reviewed Step 1 medical questions',
               },
               {
-                id: 'flagged',
-                title: 'Flagged Questions',
-                desc: `${historyStats.flaggedQuestionIds.size} bookmarked`,
+                id: 'demo',
+                title: 'Demonstration Bank',
+                count: allQuestions.filter((q) => q.contentKind === 'demo').length,
+                desc: 'Nonclinical biostatistics & heuristics vignettes',
               },
-            ].map((p) => {
-              const isSelected = selectedPool === p.id;
+            ].map((bank) => {
+              const isSelected = selectedContentKind === bank.id;
               return (
                 <div
-                  key={p.id}
-                  onClick={() => setSelectedPool(p.id as QuestionPool)}
-                  className={`card-notebook card-notebook-interactive`}
+                  key={bank.id}
+                  onClick={() => setSelectedContentKind(bank.id as any)}
+                  className={`card-notebook card-notebook-interactive ${isSelected ? 'option-selected' : ''}`}
                   style={{
-                    padding: '14px',
+                    padding: '14px 16px',
                     cursor: 'pointer',
-                    borderColor: isSelected ? 'var(--primary-teal)' : 'var(--border-ink)',
                     backgroundColor: isSelected ? 'var(--primary-teal-subtle)' : 'var(--bg-surface)',
-                    borderWidth: isSelected ? '2.5px' : '2px',
+                    border: `1.5px solid ${isSelected ? 'var(--primary-teal)' : 'var(--border-subtle)'}`,
                   }}
-                  role="radio"
-                  aria-checked={isSelected}
-                  tabIndex={0}
-                  onKeyDown={(e) => e.key === 'Enter' && setSelectedPool(p.id as QuestionPool)}
+                  id={`practice-bank-${bank.id}`}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
-                    <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>{p.title}</div>
-                    {isSelected && <Check size={16} style={{ color: 'var(--primary-teal)' }} />}
+                    <span style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-ink)' }}>
+                      {bank.title}
+                    </span>
+                    <span className="badge badge-teal" style={{ fontSize: '0.65rem' }}>
+                      {bank.count}
+                    </span>
                   </div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{p.desc}</div>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                    {bank.desc}
+                  </div>
                 </div>
               );
             })}
           </div>
         </div>
 
-        {/* 2. Taxonomy Filters (Systems & Disciplines) */}
-        <div className="card-notebook" style={{ padding: '22px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
-            <Filter size={20} style={{ color: 'var(--primary-teal)' }} />
-            <h2 style={{ fontSize: '1.15rem' }}>2. Demonstration Taxonomy Filters</h2>
-          </div>
-          <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: '16px' }}>
-            Taxonomies are marked (Demo) to maintain honest medical boundaries. Leave unselected to include all.
-          </p>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px' }}>
-            {/* Systems */}
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>Systems ({selectedSystems.length || 'All'})</span>
-                {selectedSystems.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedSystems([])}
-                    className="btn btn-sm btn-outline"
-                    style={{ fontSize: '0.72rem', padding: '2px 6px' }}
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                {availableSystems.map((sys) => {
-                  const isChecked = selectedSystems.includes(sys);
-                  return (
-                    <label
-                      key={sys}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        fontSize: '0.85rem',
-                        cursor: 'pointer',
-                        padding: '6px 10px',
-                        borderRadius: 'var(--radius-sm)',
-                        backgroundColor: isChecked ? 'var(--primary-teal-subtle)' : 'var(--bg-canvas)',
-                        border: '1px solid var(--border-ink)',
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={isChecked}
-                        onChange={() => toggleSystem(sys)}
-                        style={{ accentColor: 'var(--primary-teal)' }}
-                      />
-                      <span>{sys}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Disciplines */}
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>Disciplines ({selectedDisciplines.length || 'All'})</span>
-                {selectedDisciplines.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedDisciplines([])}
-                    className="btn btn-sm btn-outline"
-                    style={{ fontSize: '0.72rem', padding: '2px 6px' }}
-                  >
-                    Clear
-                  </button>
-                )}
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                {availableDisciplines.map((disc) => {
-                  const isChecked = selectedDisciplines.includes(disc);
-                  return (
-                    <label
-                      key={disc}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        fontSize: '0.85rem',
-                        cursor: 'pointer',
-                        padding: '6px 10px',
-                        borderRadius: 'var(--radius-sm)',
-                        backgroundColor: isChecked ? 'var(--primary-teal-subtle)' : 'var(--bg-canvas)',
-                        border: '1px solid var(--border-ink)',
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={isChecked}
-                        onChange={() => toggleDiscipline(disc)}
-                        style={{ accentColor: 'var(--primary-teal)' }}
-                      />
-                      <span>{disc}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* 3. Session Mode & Question Count */}
-        <div className="card-notebook" style={{ padding: '22px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
-            <BookOpen size={20} style={{ color: 'var(--primary-teal)' }} />
-            <h2 style={{ fontSize: '1.15rem' }}>3. Practice Mode & Size</h2>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px' }}>
-            {/* Mode: Tutor vs Timed */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <label style={{ fontWeight: 700, fontSize: '0.9rem' }}>Mode</label>
-
-              <div style={{ display: 'flex', gap: '12px' }}>
-                <div
-                  onClick={() => setMode('tutor')}
-                  className="card-notebook card-notebook-interactive"
-                  style={{
-                    flex: 1,
-                    padding: '12px',
-                    cursor: 'pointer',
-                    borderColor: mode === 'tutor' ? 'var(--primary-teal)' : 'var(--border-ink)',
-                    backgroundColor: mode === 'tutor' ? 'var(--primary-teal-subtle)' : 'var(--bg-surface)',
-                  }}
-                  role="radio"
-                  aria-checked={mode === 'tutor'}
-                  tabIndex={0}
-                >
-                  <div style={{ fontWeight: 700, fontSize: '0.92rem', marginBottom: '4px' }}>Tutor Mode</div>
-                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                    Immediate feedback and explanations after submitting each question.
-                  </div>
-                </div>
-
-                <div
-                  onClick={() => setMode('timed')}
-                  className="card-notebook card-notebook-interactive"
-                  style={{
-                    flex: 1,
-                    padding: '12px',
-                    cursor: 'pointer',
-                    borderColor: mode === 'timed' ? 'var(--coral)' : 'var(--border-ink)',
-                    backgroundColor: mode === 'timed' ? 'var(--coral-light)' : 'var(--bg-surface)',
-                  }}
-                  role="radio"
-                  aria-checked={mode === 'timed'}
-                  tabIndex={0}
-                >
-                  <div style={{ fontWeight: 700, fontSize: '0.92rem', marginBottom: '4px' }}>Timed Mode</div>
-                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                    Countdown timer active. Feedback disclosed only after block submission.
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Question Count Slider */}
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                <label htmlFor="q-count-input" style={{ fontWeight: 700, fontSize: '0.9rem' }}>
-                  Target Question Count: {questionCount}
-                </label>
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  Max available: {eligibility.totalMatchingFilters}
+        {/* 3. COLLAPSED ADVANCED CONFIGURATION (Accordion / Disclosure) */}
+        <div className="card-notebook" style={{ overflow: 'hidden' }}>
+          <button
+            type="button"
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            style={{
+              width: '100%',
+              padding: '16px 22px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              background: 'var(--bg-surface-alt)',
+              border: 'none',
+              cursor: 'pointer',
+              fontWeight: 700,
+              fontSize: '0.92rem',
+              color: 'var(--text-ink)',
+            }}
+            id="practice-toggle-advanced-btn"
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <SlidersHorizontal size={17} style={{ color: 'var(--primary-teal)' }} />
+              <span>Advanced Filters & Taxonomy</span>
+              {activeAdvancedCount > 0 && (
+                <span className="badge badge-gold" style={{ fontSize: '0.65rem' }}>
+                  {activeAdvancedCount} active
                 </span>
-              </div>
-              <input
-                id="q-count-input"
-                type="range"
-                min="1"
-                max={Math.max(1, Math.min(12, allQuestions.length))}
-                value={questionCount}
-                onChange={(e) => setQuestionCount(Number(e.target.value))}
-                style={{ width: '100%', accentColor: 'var(--primary-teal)', cursor: 'pointer' }}
-              />
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                <span>1 question</span>
-                <span>5 questions</span>
-                <span>{Math.max(1, Math.min(12, allQuestions.length))} questions</span>
-              </div>
+              )}
             </div>
+            {showAdvanced ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+          </button>
 
-            {/* Timed Mode Duration Config */}
-            {mode === 'timed' && (
+          {showAdvanced && (
+            <div style={{ padding: '22px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+              {/* Question Pool */}
               <div>
-                <label htmlFor="duration-input" style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, fontSize: '0.9rem', marginBottom: '6px' }}>
-                  <Clock size={16} />
-                  <span>Block Duration: {durationMinutes} minutes</span>
+                <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '8px' }}>
+                  Question Pool Filter
                 </label>
-                <input
-                  id="duration-input"
-                  type="range"
-                  min="2"
-                  max="30"
-                  step="1"
-                  value={durationMinutes}
-                  onChange={(e) => setDurationMinutes(Number(e.target.value))}
-                  style={{ width: '100%', accentColor: 'var(--coral)', cursor: 'pointer' }}
-                />
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-light)', marginTop: '4px' }}>
-                  (~{Math.round((durationMinutes * 60) / Math.max(1, questionCount))} seconds per question)
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                  {[
+                    { id: 'all', label: 'All Pool' },
+                    { id: 'unused', label: 'Unused Questions Only' },
+                    { id: 'incorrect', label: 'Past Incorrects' },
+                    { id: 'flagged', label: 'Flagged by You' },
+                  ].map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => setSelectedPool(p.id as any)}
+                      className={`btn btn-sm ${selectedPool === p.id ? 'btn-primary' : 'btn-secondary'}`}
+                      style={{ fontSize: '0.82rem' }}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
                 </div>
               </div>
-            )}
-          </div>
+
+              {/* Organ Systems */}
+              {availableSystems.length > 0 && (
+                <div>
+                  <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '8px' }}>
+                    Filter by System ({selectedSystems.length > 0 ? `${selectedSystems.length} selected` : 'All Systems'})
+                  </label>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                    {availableSystems.map((sys) => {
+                      const isChecked = selectedSystems.includes(sys);
+                      return (
+                        <button
+                          key={sys}
+                          type="button"
+                          onClick={() => toggleSystem(sys)}
+                          className={`btn btn-sm ${isChecked ? 'btn-primary' : 'btn-secondary'}`}
+                          style={{ fontSize: '0.8rem', padding: '4px 10px' }}
+                        >
+                          {isChecked && <Check size={12} />}
+                          <span>{sys}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Disciplines */}
+              {availableDisciplines.length > 0 && (
+                <div>
+                  <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '8px' }}>
+                    Filter by Discipline ({selectedDisciplines.length > 0 ? `${selectedDisciplines.length} selected` : 'All Disciplines'})
+                  </label>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                    {availableDisciplines.map((disc) => {
+                      const isChecked = selectedDisciplines.includes(disc);
+                      return (
+                        <button
+                          key={disc}
+                          type="button"
+                          onClick={() => toggleDiscipline(disc)}
+                          className={`btn btn-sm ${isChecked ? 'btn-primary' : 'btn-secondary'}`}
+                          style={{ fontSize: '0.8rem', padding: '4px 10px' }}
+                        >
+                          {isChecked && <Check size={12} />}
+                          <span>{disc}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Timed duration slider */}
+              {mode === 'timed' && (
+                <div>
+                  <label style={{ display: 'block', fontWeight: 600, fontSize: '0.85rem', marginBottom: '6px' }}>
+                    Block Duration: {durationMinutes} Minutes (~{(durationMinutes * 60 / questionCount).toFixed(0)}s per question)
+                  </label>
+                  <input
+                    type="range"
+                    min={3}
+                    max={60}
+                    step={1}
+                    value={durationMinutes}
+                    onChange={(e) => setDurationMinutes(parseInt(e.target.value, 10))}
+                    style={{ width: '100%', accentColor: 'var(--primary-teal)' }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Live Matching Summary & Honest Disclaimers */}
+        {/* 4. LAUNCH SUMMARY & CTA BAR */}
         <div
           className="card-notebook"
           style={{
-            padding: '16px 20px',
-            backgroundColor: eligibility.actualCount > 0 ? 'var(--mint-light)' : 'var(--coral-light)',
-            borderColor: eligibility.actualCount > 0 ? 'var(--mint)' : 'var(--coral)',
+            padding: '20px 24px',
+            backgroundColor: '#FFFFFF',
+            border: '2px solid var(--primary-teal)',
+            boxShadow: '0 8px 25px -4px rgba(15, 118, 110, 0.12)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
             flexWrap: 'wrap',
-            gap: '12px',
+            gap: '16px',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            {eligibility.actualCount > 0 ? (
-              <Check size={22} style={{ color: 'var(--mint)' }} />
-            ) : (
-              <AlertCircle size={22} style={{ color: 'var(--coral)' }} />
-            )}
-            <div>
-              <div style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--text-ink)' }}>
-                {eligibility.actualCount} Question{eligibility.actualCount === 1 ? '' : 's'} Ready to Launch
-              </div>
-              <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                {eligibility.message || `${eligibility.totalMatchingFilters} matching questions found in the ${selectedPool} pool.`}
-              </div>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+              <span className="badge badge-teal">
+                {eligibility.actualCount} Available Questions
+              </span>
+              <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                {mode === 'tutor' ? 'Tutor Mode' : `Timed (${durationMinutes}m)`}
+              </span>
+            </div>
+            <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+              {eligibility.actualCount === 0
+                ? 'No questions match the current filter criteria. Broaden your filters.'
+                : `Block will contain ${eligibility.actualCount} questions selected without in-session repeats.`}
             </div>
           </div>
 
@@ -411,27 +437,21 @@ export const CreateSessionView: React.FC<CreateSessionViewProps> = ({
             >
               Cancel
             </button>
-
             <button
               type="submit"
               disabled={eligibility.actualCount === 0}
-              className="btn btn-primary"
-              id="create-session-launch-btn"
-              style={{
-                opacity: eligibility.actualCount === 0 ? 0.5 : 1,
-                cursor: eligibility.actualCount === 0 ? 'not-allowed' : 'pointer',
-              }}
+              className="btn btn-primary btn-lg"
+              id="practice-launch-btn"
+              style={{ minWidth: '180px' }}
             >
-              <Play size={16} fill="currentColor" />
-              <span>Launch Session ({eligibility.actualCount})</span>
+              <Play size={18} fill="currentColor" />
+              <span>Start Practice ({eligibility.actualCount})</span>
             </button>
           </div>
-        </div>
-
-        <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', textAlign: 'center' }}>
-          * Practice block for software demonstration only. Not an official USMLE simulation.
         </div>
       </form>
     </div>
   );
 };
+
+export default CreateSessionView;

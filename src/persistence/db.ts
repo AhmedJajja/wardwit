@@ -13,8 +13,10 @@ import type {
   ErrorNotebookEntry,
   Flashcard,
   QuestionReport,
+  DiscoverCard,
 } from '../domain/types';
 import { DEMO_QUESTIONS } from '../config/demoQuestions';
+import { DEMO_DISCOVER_CARDS } from '../config/demoDiscoverCards';
 
 export interface WardWitDB extends DBSchema {
   questions: {
@@ -85,10 +87,19 @@ export interface WardWitDB extends DBSchema {
     key: string;
     value: { id: string; earnedAt: number };
   };
+  discoverCards: {
+    key: string;
+    value: DiscoverCard;
+    indexes: {
+      'by-editorial-status': string;
+      'by-content-kind': string;
+      'by-topic': string;
+    };
+  };
 }
 
 const DB_NAME = 'wardwit_local_db';
-const DB_VERSION = 2; // Incremented for Phase 2 stores
+const DB_VERSION = 3; // Incremented for Phase 3 Discover and learning-content stores
 
 let dbPromise: Promise<IDBPDatabase<WardWitDB>> | null = null;
 
@@ -160,6 +171,14 @@ export function getDatabase(): Promise<IDBPDatabase<WardWitDB>> {
         if (!db.objectStoreNames.contains('achievements')) {
           db.createObjectStore('achievements', { keyPath: 'id' });
         }
+
+        // Phase 3 stores:
+        if (!db.objectStoreNames.contains('discoverCards')) {
+          const dcStore = db.createObjectStore('discoverCards', { keyPath: 'id' });
+          dcStore.createIndex('by-editorial-status', 'editorialStatus');
+          dcStore.createIndex('by-content-kind', 'contentKind');
+          dcStore.createIndex('by-topic', 'curriculumMapping.topic');
+        }
       },
     }).then(async (db) => {
       // Seed default demo questions if empty
@@ -171,6 +190,17 @@ export function getDatabase(): Promise<IDBPDatabase<WardWitDB>> {
         }
         await tx.done;
       }
+
+      // Seed default demo discover cards if empty
+      const dcCount = await db.count('discoverCards');
+      if (dcCount === 0) {
+        const tx = db.transaction('discoverCards', 'readwrite');
+        for (const dc of DEMO_DISCOVER_CARDS) {
+          await tx.store.put(dc);
+        }
+        await tx.done;
+      }
+
       return db;
     });
   }
